@@ -6,8 +6,10 @@ Following TDD methodology:
 3. REFACTOR: Improve implementation
 """
 
+from unittest.mock import AsyncMock, Mock, patch
+
 import pytest
-from unittest.mock import Mock, patch, AsyncMock
+
 from sipap_intelligence_mcp.apis.weather import OpenWeatherMapClient
 from sipap_intelligence_mcp.exceptions import WeatherAPIException
 
@@ -67,7 +69,7 @@ class TestOpenWeatherMapClient:
         self, weather_client, mock_weather_response
     ):
         """Test fetching weather by coordinates succeeds."""
-        with patch('httpx.AsyncClient.get', new_callable=AsyncMock) as mock_get:
+        with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get:
             mock_response = Mock()
             mock_response.status_code = 200
             mock_response.json.return_value = mock_weather_response
@@ -77,12 +79,12 @@ class TestOpenWeatherMapClient:
                 lat=51.5085, lon=-0.1257
             )
 
-            assert result['temperature'] == 15.2
-            assert result['precipitation'] == 'light_rain'
-            assert result['wind_speed'] == 12.5
-            assert result['visibility'] == 8000
-            assert result['humidity'] == 82
-            assert result['weather_main'] == 'Rain'
+            assert result["temperature"] == 15.2
+            assert result["precipitation"] == "light_rain"
+            assert result["wind_speed"] == 12.5
+            assert result["visibility"] == 8000
+            assert result["humidity"] == 82
+            assert result["weather_main"] == "Rain"
 
     @pytest.mark.asyncio
     async def test_get_weather_by_coordinates_invalid_coords(self, weather_client):
@@ -96,7 +98,7 @@ class TestOpenWeatherMapClient:
     @pytest.mark.asyncio
     async def test_get_weather_by_city_success(self, weather_client, mock_weather_response):
         """Test fetching weather by city name succeeds."""
-        with patch('httpx.AsyncClient.get', new_callable=AsyncMock) as mock_get:
+        with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get:
             mock_response = Mock()
             mock_response.status_code = 200
             mock_response.json.return_value = mock_weather_response
@@ -106,13 +108,13 @@ class TestOpenWeatherMapClient:
                 city="London", country_code="GB"
             )
 
-            assert result['temperature'] == 15.2
-            assert result['city'] == 'London'
+            assert result["temperature"] == 15.2
+            assert result["city"] == "London"
 
     @pytest.mark.asyncio
     async def test_get_weather_api_error_404(self, weather_client):
         """Test API returns 404 for city not found."""
-        with patch('httpx.AsyncClient.get', new_callable=AsyncMock) as mock_get:
+        with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get:
             mock_response = Mock()
             mock_response.status_code = 404
             mock_response.text = "City not found"
@@ -124,7 +126,7 @@ class TestOpenWeatherMapClient:
     @pytest.mark.asyncio
     async def test_get_weather_api_error_401(self, weather_client):
         """Test API returns 401 for invalid API key."""
-        with patch('httpx.AsyncClient.get', new_callable=AsyncMock) as mock_get:
+        with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get:
             mock_response = Mock()
             mock_response.status_code = 401
             mock_response.text = "Invalid API key"
@@ -136,7 +138,7 @@ class TestOpenWeatherMapClient:
     @pytest.mark.asyncio
     async def test_get_weather_network_timeout(self, weather_client):
         """Test network timeout raises WeatherAPIException."""
-        with patch('httpx.AsyncClient.get', new_callable=AsyncMock) as mock_get:
+        with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get:
             mock_get.side_effect = TimeoutError("Request timeout")
 
             with pytest.raises(WeatherAPIException, match="Request timeout"):
@@ -169,7 +171,7 @@ class TestOpenWeatherMapClient:
             ]
         }
 
-        with patch('httpx.AsyncClient.get', new_callable=AsyncMock) as mock_get:
+        with patch("httpx.AsyncClient.get", new_callable=AsyncMock) as mock_get:
             mock_response = Mock()
             mock_response.status_code = 200
             mock_response.json.return_value = mock_forecast
@@ -180,33 +182,33 @@ class TestOpenWeatherMapClient:
             )
 
             assert len(result) == 2
-            assert result[0]['temperature'] == 15.2
-            assert result[0]['precipitation'] == 'light_rain'
-            assert result[1]['temperature'] == 16.5
+            assert result[0]["temperature"] == 15.2
+            assert result[0]["precipitation"] == "light_rain"
+            assert result[1]["temperature"] == 16.5
 
     @pytest.mark.asyncio
     async def test_parse_weather_data_correctly(self, weather_client, mock_weather_response):
         """Test _parse_weather_data extracts correct fields."""
         parsed = weather_client._parse_weather_data(mock_weather_response)
 
-        assert parsed['temperature'] == 15.2
-        assert parsed['feels_like'] == 14.8
-        assert parsed['pressure'] == 1013
-        assert parsed['humidity'] == 82
-        assert parsed['wind_speed'] == 12.5
-        assert parsed['wind_direction'] == 250
-        assert parsed['visibility'] == 8000
-        assert parsed['cloud_coverage'] == 90
-        assert parsed['weather_main'] == 'Rain'
-        assert parsed['weather_description'] == 'light rain'
-        assert parsed['precipitation'] == 'light_rain'
-        assert parsed['city'] == 'London'
+        assert parsed["temperature"] == 15.2
+        assert parsed["feels_like"] == 14.8
+        assert parsed["pressure"] == 1013
+        assert parsed["humidity"] == 82
+        assert parsed["wind_speed"] == 12.5
+        assert parsed["wind_direction"] == 250
+        assert parsed["visibility"] == 8000
+        assert parsed["cloud_coverage"] == 90
+        assert parsed["weather_main"] == "Rain"
+        assert parsed["weather_description"] == "light rain"
+        assert parsed["precipitation"] == "light_rain"
+        assert parsed["city"] == "London"
 
     def test_classify_precipitation_correctly(self, weather_client):
-        """Test _classify_precipitation maps weather correctly."""
-        assert weather_client._classify_precipitation('Rain') == 'rain'
-        assert weather_client._classify_precipitation('Drizzle') == 'drizzle'
-        assert weather_client._classify_precipitation('Snow') == 'snow'
-        assert weather_client._classify_precipitation('Clear') == 'none'
-        assert weather_client._classify_precipitation('Clouds') == 'none'
-        assert weather_client._classify_precipitation('Thunderstorm') == 'heavy_rain'
+        """Test _classify_precipitation maps weather description correctly."""
+        assert weather_client._classify_precipitation("light rain") == "light_rain"
+        assert weather_client._classify_precipitation("heavy rain") == "heavy_rain"
+        assert weather_client._classify_precipitation("moderate rain") == "moderate_rain"
+        assert weather_client._classify_precipitation("light snow") == "light_snow"
+        assert weather_client._classify_precipitation("overcast clouds") == "overcast_clouds"
+        assert weather_client._classify_precipitation("") == "none"

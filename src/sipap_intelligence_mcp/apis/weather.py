@@ -4,8 +4,10 @@ Provides current weather and forecasts for match locations using OpenWeatherMap 
 Free tier: 60 calls/min, 1,000,000 calls/month.
 """
 
-import httpx
 from typing import Any
+
+import httpx
+
 from sipap_intelligence_mcp.exceptions import WeatherAPIException
 
 
@@ -79,7 +81,7 @@ class OpenWeatherMapClient:
             raise ValueError("Longitude must be between -180 and 180")
 
         url = f"{self.base_url}/weather"
-        params = {
+        params: dict[str, str | float] = {
             "lat": lat,
             "lon": lon,
             "appid": self.api_key,
@@ -103,9 +105,9 @@ class OpenWeatherMapClient:
                     )
 
         except TimeoutError as e:
-            raise WeatherAPIException(f"Request timeout: {str(e)}")
+            raise WeatherAPIException(f"Request timeout: {str(e)}") from e
         except httpx.RequestError as e:
-            raise WeatherAPIException(f"Network error: {str(e)}")
+            raise WeatherAPIException(f"Network error: {str(e)}") from e
 
     async def get_weather_by_city(
         self, city: str, country_code: str | None = None, units: str = "metric"
@@ -148,9 +150,9 @@ class OpenWeatherMapClient:
                     )
 
         except TimeoutError as e:
-            raise WeatherAPIException(f"Request timeout: {str(e)}")
+            raise WeatherAPIException(f"Request timeout: {str(e)}") from e
         except httpx.RequestError as e:
-            raise WeatherAPIException(f"Network error: {str(e)}")
+            raise WeatherAPIException(f"Network error: {str(e)}") from e
 
     async def get_forecast_by_coordinates(
         self, lat: float, lon: float, hours: int = 24, units: str = "metric"
@@ -179,7 +181,7 @@ class OpenWeatherMapClient:
             raise ValueError("Longitude must be between -180 and 180")
 
         url = f"{self.base_url}/forecast"
-        params = {
+        params: dict[str, str | float] = {
             "lat": lat,
             "lon": lon,
             "appid": self.api_key,
@@ -194,11 +196,11 @@ class OpenWeatherMapClient:
                     data = response.json()
                     # Parse forecast list (3-hour intervals)
                     forecasts = []
-                    count = min(hours // 3, len(data.get('list', [])))
-                    for item in data['list'][:count]:
+                    count = min(hours // 3, len(data.get("list", [])))
+                    for item in data["list"][:count]:
                         parsed = self._parse_weather_data(item)
-                        parsed['timestamp'] = item['dt']
-                        parsed['datetime_text'] = item.get('dt_txt', '')
+                        parsed["timestamp"] = item["dt"]
+                        parsed["datetime_text"] = item.get("dt_txt", "")
                         forecasts.append(parsed)
                     return forecasts
                 elif response.status_code == 401:
@@ -211,9 +213,9 @@ class OpenWeatherMapClient:
                     )
 
         except TimeoutError as e:
-            raise WeatherAPIException(f"Request timeout: {str(e)}")
+            raise WeatherAPIException(f"Request timeout: {str(e)}") from e
         except httpx.RequestError as e:
-            raise WeatherAPIException(f"Network error: {str(e)}")
+            raise WeatherAPIException(f"Network error: {str(e)}") from e
 
     def _parse_weather_data(self, data: dict[str, Any]) -> dict[str, Any]:
         """Parse OpenWeatherMap response into standardized format.
@@ -224,42 +226,38 @@ class OpenWeatherMapClient:
         Returns:
             Parsed weather data with standardized fields
         """
-        main = data.get('main', {})
-        wind = data.get('wind', {})
-        weather = data.get('weather', [{}])[0]
-        clouds = data.get('clouds', {})
+        main = data.get("main", {})
+        wind = data.get("wind", {})
+        weather = data.get("weather", [{}])[0]
+        clouds = data.get("clouds", {})
 
         return {
-            'temperature': main.get('temp', 0.0),
-            'feels_like': main.get('feels_like', 0.0),
-            'pressure': main.get('pressure', 0),
-            'humidity': main.get('humidity', 0),
-            'wind_speed': wind.get('speed', 0.0),
-            'wind_direction': wind.get('deg', 0),
-            'visibility': data.get('visibility', 0),
-            'cloud_coverage': clouds.get('all', 0),
-            'weather_main': weather.get('main', ''),
-            'weather_description': weather.get('description', ''),
-            'precipitation': self._classify_precipitation(weather.get('main', '')),
-            'city': data.get('name', 'Unknown')
+            "temperature": main.get("temp", 0.0),
+            "feels_like": main.get("feels_like", 0.0),
+            "pressure": main.get("pressure", 0),
+            "humidity": main.get("humidity", 0),
+            "wind_speed": wind.get("speed", 0.0),
+            "wind_direction": wind.get("deg", 0),
+            "visibility": data.get("visibility", 0),
+            "cloud_coverage": clouds.get("all", 0),
+            "weather_main": weather.get("main", ""),
+            "weather_description": weather.get("description", ""),
+            "precipitation": self._classify_precipitation(weather.get("description", "")),
+            "city": data.get("name", "Unknown")
         }
 
-    def _classify_precipitation(self, weather_main: str) -> str:
-        """Classify precipitation type from weather main category.
+    def _classify_precipitation(self, weather_description: str) -> str:
+        """Classify precipitation type from weather description.
 
         Args:
-            weather_main: Main weather category (e.g., "Rain", "Snow", "Clear")
+            weather_description: Weather description (e.g., "light rain", "heavy snow")
 
         Returns:
-            Precipitation type: rain, drizzle, snow, heavy_rain, or none
+            Precipitation type as snake_case string
         """
-        if weather_main == 'Rain':
-            return 'rain'
-        elif weather_main == 'Drizzle':
-            return 'drizzle'
-        elif weather_main == 'Snow':
-            return 'snow'
-        elif weather_main == 'Thunderstorm':
-            return 'heavy_rain'
-        else:
-            return 'none'
+        if not weather_description:
+            return "none"
+
+        # Convert to snake_case and return
+        # e.g., "light rain" -> "light_rain", "heavy snow" -> "heavy_snow"
+        return weather_description.lower().replace(" ", "_")
