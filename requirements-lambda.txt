@@ -1,0 +1,10 @@
+# Lambda Layer Dependencies for sipap-intelligence-mcp
+# These are the runtime dependencies that will be packaged into the Lambda layer
+#
+# IMPORTANT: sipap-common and sipap-mcp are provided as SEPARATE Lambda layers
+# and should NOT be included here. They are attached to the Lambda function independently.
+#
+# Note: boto3, pydantic are already provided by sipap-common and sipap-serverlesshandler-mcp layers
+
+# HTTP client for weather/news APIs (not in common layers)
+httpx>=0.25.0
