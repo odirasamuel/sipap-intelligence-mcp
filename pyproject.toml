@@ -72,7 +72,10 @@ target-version = "py312"
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP", "B", "A", "C4", "DTZ", "ISC", "ICN", "PIE", "T20", "Q"]
-ignore = ["E501"]  # Line too long (handled by formatter)
+ignore = [
+    "E501",  # Line too long (handled by formatter)
+    "N818",  # Exception naming (follows Sentinel pattern: *Exception not *Error)
+]
 
 [tool.coverage.run]
 source = ["src/sipap_intelligence_mcp"]
