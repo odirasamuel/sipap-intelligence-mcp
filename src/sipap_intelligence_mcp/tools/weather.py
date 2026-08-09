@@ -10,7 +10,7 @@ from sipap_common.cache import RedisCache  # type: ignore[import-untyped]
 
 from sipap_intelligence_mcp.ai.claude import ClaudeBedrockClient
 from sipap_intelligence_mcp.ai.prompts import PromptTemplates
-from sipap_intelligence_mcp.apis.weather import OpenWeatherMapClient
+from sipap_intelligence_mcp.apis.openweather import OpenWeatherMapClient
 
 # Global clients for Lambda warm start optimization (Sentinel Pattern #19)
 _weather_client: OpenWeatherMapClient | None = None

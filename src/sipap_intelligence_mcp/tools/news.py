@@ -10,9 +10,11 @@ from sipap_common.cache import RedisCache  # type: ignore[import-untyped]
 
 from sipap_intelligence_mcp.ai.claude import ClaudeBedrockClient
 from sipap_intelligence_mcp.ai.prompts import PromptTemplates
+from sipap_intelligence_mcp.apis.newsapi import NewsAPIClient
 
-# Global clients for Lambda warm start optimization
+# Global clients for Lambda warm start optimization (Sentinel Pattern #19)
 _claude_client: ClaudeBedrockClient | None = None
+_news_client: NewsAPIClient | None = None
 _cache: RedisCache | None = None
 
 
@@ -25,6 +27,15 @@ def _get_claude_client() -> ClaudeBedrockClient:
     return _claude_client
 
 
+def _get_news_client() -> NewsAPIClient:
+    """Get or create NewsAPI client (cached for warm starts)."""
+    global _news_client
+    if _news_client is None:
+        api_key = os.getenv("NEWS_API_KEY", "")
+        _news_client = NewsAPIClient(api_key=api_key)
+    return _news_client
+
+
 def _get_cache() -> RedisCache | None:
     """Get or create Redis cache (cached for warm starts)."""
     global _cache
@@ -33,6 +44,91 @@ def _get_cache() -> RedisCache | None:
         if redis_endpoint:
             _cache = RedisCache(endpoint=redis_endpoint)
     return _cache
+
+
+async def fetch_and_analyze_team_news(
+    team_id: str,
+    team_name: str,
+    days_back: int = 7,
+    max_articles: int = 10,
+) -> dict[str, Any]:
+    """Fetch recent news and analyze sentiment (full workflow).
+
+    MCP Tool: Fetches news via NewsAPI and analyzes sentiment via Claude.
+
+    Args:
+        team_id: Team identifier for caching
+        team_name: Team name for news search and analysis
+        days_back: Number of days to search back (default: 7)
+        max_articles: Maximum number of articles to analyze (default: 10)
+
+    Returns:
+        Complete news analysis with:
+            - sentiment: positive, negative, neutral
+            - confidence: 0.0-1.0
+            - key_topics: Main topics discussed
+            - impact_summary: Potential match impact
+            - articles_analyzed: Number of articles processed
+            - news_sources: List of article titles/sources
+    """
+    # Try cache first (6 hour TTL - news changes less frequently)
+    cache = _get_cache()
+    if cache:
+        cache_key = f"news:full:{team_id}:{days_back}"
+        cached = await cache.get(cache_key)
+        if cached:
+            result: dict[str, Any] = cached
+            return result
+
+    # Fetch news via NewsAPI
+    news_client = _get_news_client()
+    async with news_client as client:
+        articles = await client.search_team_news(
+            team_name=team_name,
+            days_back=days_back,
+            max_results=max_articles,
+        )
+
+    # If no articles found, return neutral sentiment
+    if not articles:
+        return {
+            "sentiment": "neutral",
+            "confidence": 0.5,
+            "key_topics": [],
+            "impact_summary": f"No recent news found for {team_name} in the last {days_back} days",
+            "articles_analyzed": 0,
+            "news_sources": [],
+        }
+
+    # Aggregate news text for analysis
+    news_text = "\n\n".join([
+        f"Title: {article['title']}\n"
+        f"Source: {article['source']}\n"
+        f"Published: {article['published_at']}\n"
+        f"Content: {article['description'] or article['content'][:200]}"
+        for article in articles
+    ])
+
+    # Analyze sentiment via Claude
+    result = await analyze_team_news(
+        team_id=team_id,
+        team_name=team_name,
+        news_text=news_text,
+        days_back=days_back,
+    )
+
+    # Add metadata about articles
+    result["articles_analyzed"] = len(articles)
+    result["news_sources"] = [
+        {"title": article["title"], "source": article["source"], "url": article["url"]}
+        for article in articles[:5]  # Top 5 sources
+    ]
+
+    # Cache result (6 hour TTL)
+    if cache:
+        await cache.set(cache_key, result, ttl=21600)
+
+    return result
 
 
 async def analyze_team_news(

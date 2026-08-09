@@ -1,27 +1,44 @@
 """MCP Server for Intelligence Tools.
 
 Implements JSON-RPC 2.0 protocol for AI-powered sports intelligence.
-Exposes 5 tools via MCP protocol:
-- get_match_weather
-- assess_weather_impact
-- analyze_team_news
-- get_injury_reports
-- get_historical_weather_performance
+Exposes 9 tools via MCP protocol:
+
+Weather Intelligence (3):
+- get_match_weather: Weather forecast for match location (OpenWeatherMap)
+- assess_weather_impact: AI-powered weather impact assessment (Claude)
+- get_historical_weather_performance: Team performance in weather conditions (Claude)
+
+News & Injury Intelligence (2):
+- fetch_and_analyze_team_news: Fetch and analyze team news sentiment (NewsAPI + Claude)
+- get_injury_reports: Injury reports with AI impact assessment (Claude)
+
+API-Football Intelligence (4):
+- get_match_predictions: AI predictions from API-Football algorithms
+- get_sidelined_players: Player/coach availability status
+- get_player_transfers: Transfer history and news
+- get_available_timezones: Timezone data for accurate scheduling
 """
 
 import json
 from collections.abc import Awaitable, Callable
 from typing import Any
 
-from sipap_intelligence_mcp.tools import news, weather
+from sipap_intelligence_mcp.tools import api_football_intelligence, news, weather
 
 # Tool registry mapping tool names to async functions
 TOOL_REGISTRY: dict[str, Callable[..., Awaitable[dict[str, Any]]]] = {
+    # Weather intelligence tools
     "get_match_weather": weather.get_match_weather,
     "assess_weather_impact": weather.assess_weather_impact,
     "get_historical_weather_performance": weather.get_historical_weather_performance,
-    "analyze_team_news": news.analyze_team_news,
+    # News & injury intelligence tools
+    "fetch_and_analyze_team_news": news.fetch_and_analyze_team_news,
     "get_injury_reports": news.get_injury_reports,
+    # API-Football intelligence tools
+    "get_match_predictions": api_football_intelligence.get_match_predictions,
+    "get_sidelined_players": api_football_intelligence.get_sidelined_players,
+    "get_player_transfers": api_football_intelligence.get_player_transfers,
+    "get_available_timezones": api_football_intelligence.get_available_timezones,
 }
 
 
@@ -69,18 +86,18 @@ TOOL_METADATA = {
             "required": ["team_id", "team_name", "weather_type"]
         }
     },
-    "analyze_team_news": {
-        "name": "analyze_team_news",
-        "description": "AI-powered sentiment analysis of team news using Claude",
+    "fetch_and_analyze_team_news": {
+        "name": "fetch_and_analyze_team_news",
+        "description": "Fetch recent news via NewsAPI and analyze sentiment using Claude AI (full workflow)",
         "inputSchema": {
             "type": "object",
             "properties": {
-                "team_id": {"type": "string", "description": "Team identifier"},
-                "team_name": {"type": "string", "description": "Team name"},
-                "news_text": {"type": "string", "description": "News articles/headlines to analyze"},
-                "days_back": {"type": "integer", "description": "Days of news analyzed", "default": 7}
+                "team_id": {"type": "string", "description": "Team identifier for caching"},
+                "team_name": {"type": "string", "description": "Team name for news search"},
+                "days_back": {"type": "integer", "description": "Days to search back (max 30)", "default": 7},
+                "max_articles": {"type": "integer", "description": "Maximum articles to analyze", "default": 10}
             },
-            "required": ["team_id", "team_name", "news_text"]
+            "required": ["team_id", "team_name"]
         }
     },
     "get_injury_reports": {
@@ -94,6 +111,47 @@ TOOL_METADATA = {
                 "severity_filter": {"type": "string", "description": "Severity filter (all, major, minor)", "default": "all"}
             },
             "required": ["team_id", "team_name"]
+        }
+    },
+    "get_match_predictions": {
+        "name": "get_match_predictions",
+        "description": "Get AI predictions from API-Football algorithms (poisson, team stats, last matches)",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "fixture_id": {"type": "integer", "description": "API-Football fixture ID"}
+            },
+            "required": ["fixture_id"]
+        }
+    },
+    "get_sidelined_players": {
+        "name": "get_sidelined_players",
+        "description": "Get sidelined (injured/suspended) players or coaches from API-Football",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "player_id": {"type": "integer", "description": "API-Football player ID (mutually exclusive with coach_id)"},
+                "coach_id": {"type": "integer", "description": "API-Football coach ID (mutually exclusive with player_id)"}
+            }
+        }
+    },
+    "get_player_transfers": {
+        "name": "get_player_transfers",
+        "description": "Get transfer history for a player or team from API-Football",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "player_id": {"type": "integer", "description": "API-Football player ID (mutually exclusive with team_id)"},
+                "team_id": {"type": "integer", "description": "API-Football team ID (mutually exclusive with player_id)"}
+            }
+        }
+    },
+    "get_available_timezones": {
+        "name": "get_available_timezones",
+        "description": "Get list of available timezones for accurate fixture scheduling and weather data",
+        "inputSchema": {
+            "type": "object",
+            "properties": {}
         }
     }
 }
