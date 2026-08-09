@@ -5,6 +5,7 @@ Provides access to API-Football intelligence endpoints for:
 - Sidelined (injured/suspended players and coaches)
 - Transfers (player transfer information)
 - Timezone (timezone data for accurate scheduling)
+- Fixtures (live and completed match results with scores)
 
 Free tier: 100 requests/day
 Documentation: https://www.api-football.com/documentation-v3
@@ -21,11 +22,12 @@ class APIFootballIntelligenceClient:
     """
     API-Football client for intelligence data.
 
-    Focused on 4 intelligence endpoints:
+    Focused on 5 intelligence endpoints:
     1. Predictions - AI predictions for fixtures
     2. Sidelined - Player/coach availability
     3. Transfers - Transfer news and history
     4. Timezone - Timezone information
+    5. Fixtures - Live and completed match results (real-time scores)
 
     API Documentation: https://www.api-football.com/documentation-v3
     """
@@ -310,3 +312,106 @@ class APIFootballIntelligenceClient:
             raise IntelligenceMCPException(f"HTTP error fetching timezones: {str(e)}") from e
         except Exception as e:
             raise IntelligenceMCPException(f"Error fetching timezones: {str(e)}") from e
+
+    async def get_fixtures(
+        self,
+        date: str | None = None,
+        league_id: int | None = None,
+        season: int | None = None,
+        team_id: int | None = None,
+        status: str | None = None,
+        last: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """
+        Get fixtures with live scores and results.
+
+        Returns real-time match data including scores for live and completed fixtures.
+        This is the primary method for fetching actual match results, not predictions.
+
+        API Endpoint: GET /fixtures
+        Update Frequency: Real-time (live matches), immediate after FT
+        Recommended Calls: As needed for user requests
+
+        Status values:
+            - "LIVE" - All live match statuses (1H, HT, 2H, ET, BT, P, SUSP, INT)
+            - "FT" - Finished after 90 minutes
+            - "AET" - Finished after extra time
+            - "PEN" - Finished after penalty shootout
+            - "NS" - Not started (scheduled)
+            - "CANC" - Cancelled
+            - "PST" - Postponed
+            - "ABD" - Abandoned
+
+        Args:
+            date: Date in YYYY-MM-DD format (returns all fixtures on this date)
+            league_id: API-Football league ID (filter by competition)
+            season: Season year (e.g., 2026)
+            team_id: API-Football team ID (filter by team)
+            status: Match status filter (e.g., "FT", "LIVE")
+            last: Get last N fixtures (for a team/league)
+
+        Returns:
+            List of fixtures with:
+                - fixture: Match info (id, date, status, venue)
+                - league: Competition info
+                - teams: Home/away team info
+                - goals: Scores (home, away)
+                - score: Detailed scores (halftime, fulltime, extratime, penalty)
+
+        Raises:
+            IntelligenceMCPException: If API request fails
+
+        Examples:
+            >>> # Get all live matches
+            >>> fixtures = await client.get_fixtures(status="LIVE")
+
+            >>> # Get finished matches for today
+            >>> from datetime import datetime, UTC
+            >>> today = datetime.now(UTC).date().isoformat()
+            >>> fixtures = await client.get_fixtures(date=today, status="FT")
+
+            >>> # Get last 10 matches for a team
+            >>> fixtures = await client.get_fixtures(team_id=33, last=10)
+
+            >>> # Get all fixtures for a league on a specific date
+            >>> fixtures = await client.get_fixtures(
+            ...     date="2026-08-09",
+            ...     league_id=39,  # Premier League
+            ...     season=2026
+            ... )
+        """
+        if not self._client:
+            raise RuntimeError("Client not initialized. Use 'async with' context manager")
+
+        url = f"{self.BASE_URL}/fixtures"
+        params: dict[str, str | int] = {}
+
+        # Build query parameters (only include provided filters)
+        if date is not None:
+            params["date"] = date
+        if league_id is not None:
+            params["league"] = league_id
+        if season is not None:
+            params["season"] = season
+        if team_id is not None:
+            params["team"] = team_id
+        if status is not None:
+            params["status"] = status
+        if last is not None:
+            params["last"] = last
+
+        try:
+            response = await self._client.get(url, headers=self._get_headers(), params=params)
+            response.raise_for_status()
+            data = response.json()
+
+            if data.get("errors") and len(data["errors"]) > 0:
+                raise IntelligenceMCPException(f"API-Football error: {data['errors']}")
+
+            result: list[dict[str, Any]] = data.get("response", [])
+            return result
+
+        except httpx.HTTPError as e:
+            raise IntelligenceMCPException(f"HTTP error fetching fixtures: {str(e)}") from e
+        except Exception as e:
+            raise IntelligenceMCPException(f"Error fetching fixtures: {str(e)}") from e

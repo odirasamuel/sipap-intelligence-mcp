@@ -1,7 +1,7 @@
 """MCP Server for Intelligence Tools.
 
 Implements JSON-RPC 2.0 protocol for AI-powered sports intelligence.
-Exposes 9 tools via MCP protocol:
+Exposes 10 tools via MCP protocol:
 
 Weather Intelligence (3):
 - get_match_weather: Weather forecast for match location (OpenWeatherMap)
@@ -12,11 +12,12 @@ News & Injury Intelligence (2):
 - fetch_and_analyze_team_news: Fetch and analyze team news sentiment (NewsAPI + Claude)
 - get_injury_reports: Injury reports with AI impact assessment (Claude)
 
-API-Football Intelligence (4):
+API-Football Intelligence (5):
 - get_match_predictions: AI predictions from API-Football algorithms
 - get_sidelined_players: Player/coach availability status
 - get_player_transfers: Transfer history and news
 - get_available_timezones: Timezone data for accurate scheduling
+- get_match_results: Live and completed match results with scores (REAL-TIME)
 """
 
 import json
@@ -39,6 +40,7 @@ TOOL_REGISTRY: dict[str, Callable[..., Awaitable[dict[str, Any]]]] = {
     "get_sidelined_players": api_football_intelligence.get_sidelined_players,
     "get_player_transfers": api_football_intelligence.get_player_transfers,
     "get_available_timezones": api_football_intelligence.get_available_timezones,
+    "get_match_results": api_football_intelligence.get_match_results,
 }
 
 
@@ -152,6 +154,32 @@ TOOL_METADATA = {
         "inputSchema": {
             "type": "object",
             "properties": {}
+        }
+    },
+    "get_match_results": {
+        "name": "get_match_results",
+        "description": "Get live or completed match results from API-Football with real-time scores",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "date": {
+                    "type": "string",
+                    "description": "Date in YYYY-MM-DD format (default: today)"
+                },
+                "league_name": {
+                    "type": "string",
+                    "description": "League/competition name (e.g., 'Premier League', 'Women Africa Cup of Nations')"
+                },
+                "team_name": {
+                    "type": "string",
+                    "description": "Team name filter (e.g., 'Arsenal', 'Liverpool')"
+                },
+                "status": {
+                    "type": "string",
+                    "description": "Match status: 'FT' (finished, default), 'LIVE' (live matches), 'ALL' (both)",
+                    "default": "FT"
+                }
+            }
         }
     }
 }

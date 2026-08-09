@@ -1,10 +1,11 @@
 """API-Football Intelligence Tools for MCP server.
 
-Provides 4 intelligence tools using API-Football data:
+Provides 5 intelligence tools using API-Football data:
 1. get_match_predictions - AI predictions for fixtures
 2. get_sidelined_players - Player/coach availability status
 3. get_player_transfers - Transfer history and news
 4. get_available_timezones - Timezone data for accurate scheduling
+5. get_match_results - Live and completed match results with scores (REAL-TIME)
 """
 
 import os
@@ -290,5 +291,161 @@ async def get_available_timezones() -> dict[str, Any]:
     # Cache result (7 day TTL - static data)
     if cache:
         await cache.set(cache_key, response, ttl=604800)
+
+    return response
+
+
+async def get_match_results(
+    date: str | None = None,
+    league_name: str | None = None,
+    team_name: str | None = None,
+    status: str = "FT",
+) -> dict[str, Any]:
+    """Get live or completed match results from API-Football (REAL-TIME DATA).
+
+    MCP Tool: Fetches actual match scores and status directly from API-Football.
+    This provides LIVE, REAL-TIME data, not cached database data.
+
+    Use this tool when user asks for:
+    - "What are the results for...?"
+    - "What's the score of...?"
+    - "How did [team] do...?"
+    - "Show me live matches"
+    - "What's happening in [competition]?"
+
+    Status values:
+        - "FT" - Finished matches (90 minutes, default)
+        - "LIVE" - All live matches (1H, HT, 2H, ET, etc.)
+        - "AET" - Finished after extra time
+        - "PEN" - Finished after penalty shootout
+        - "ALL" - All statuses (FT + LIVE + AET + PEN)
+
+    Caching Strategy:
+    - Cache TTL: 2 minutes for LIVE (fast-changing)
+    - Cache TTL: 1 hour for FT (static after full-time)
+    - Cache key: match_results:{date}:{status}:{league_name}:{team_name}
+
+    Args:
+        date: Date in YYYY-MM-DD format (default: today)
+        league_name: League/competition name (e.g., "Premier League", "Women Africa Cup of Nations")
+        team_name: Team name filter (e.g., "Arsenal", "Liverpool")
+        status: Match status - "FT" (finished), "LIVE" (live), "ALL" (both)
+
+    Returns:
+        Match results with:
+            - matches: List of fixtures with scores
+            - count: Number of matches found
+            - status_filter: Applied status filter
+            - Each match contains:
+                - fixture: Match info (id, date, status, venue, referee)
+                - league: Competition info (id, name, country, season)
+                - teams: Home/away team info (id, name, logo)
+                - goals: Scores (home, away)
+                - score: Detailed scores (halftime, fulltime, extratime, penalty)
+
+    Examples:
+        >>> # Get all finished matches today
+        >>> result = await get_match_results()
+        >>> result['count']
+        45
+
+        >>> # Get live matches
+        >>> result = await get_match_results(status="LIVE")
+
+        >>> # Get results for Women Africa Cup of Nations
+        >>> result = await get_match_results(league_name="Women Africa Cup of Nations")
+
+        >>> # Get Arsenal's recent results
+        >>> result = await get_match_results(team_name="Arsenal", status="FT")
+
+        >>> # Get all matches (live + finished) for Premier League today
+        >>> result = await get_match_results(
+        ...     league_name="Premier League",
+        ...     status="ALL"
+        ... )
+    """
+    from datetime import UTC, datetime
+
+    # Default to today if no date provided
+    if date is None:
+        date = datetime.now(UTC).date().isoformat()
+
+    # Build cache key
+    cache_key = f"match_results:{date}:{status}:{league_name or 'all'}:{team_name or 'all'}"
+
+    # Determine cache TTL based on status
+    # LIVE data changes fast (2 min), finished data is static (1 hour)
+    if status == "LIVE":
+        cache_ttl = 120  # 2 minutes
+    else:
+        cache_ttl = 3600  # 1 hour
+
+    # Try cache first (Sentinel Pattern #20: Cache-Aside)
+    cache = _get_cache()
+    if cache:
+        cached = await cache.get(cache_key)
+        if cached:
+            result: dict[str, Any] = cached
+            return result
+
+    # Fetch from API-Football (REAL-TIME)
+    api_client = _get_api_football_client()
+    async with api_client as client:
+        # Build API parameters
+        api_params: dict[str, Any] = {"date": date}
+
+        # Map league name to league ID if provided
+        # NOTE: For MVP, we pass league_name as-is and let API-Football search
+        # In production, we should map to exact league IDs via Data MCP
+        # if league_name:
+        #     api_params["league"] = league_id  # Would come from league name → ID mapping
+
+        # Map team name to team ID if provided
+        # NOTE: Similar to league, for MVP we filter results after fetch
+        # In production, map team_name → team_id via Data MCP
+        # if team_name:
+        #     api_params["team"] = team_id
+
+        # Handle status filter
+        if status == "ALL":
+            # Fetch both live and finished
+            # NOTE: API-Football doesn't support "ALL" status
+            # We need to make 2 calls and merge results
+            live_fixtures = await client.get_fixtures(date=date, status="LIVE")
+            finished_fixtures = await client.get_fixtures(date=date, status="FT")
+            fixtures = live_fixtures + finished_fixtures
+        else:
+            fixtures = await client.get_fixtures(date=date, status=status)
+
+    # Filter by league name if provided (case-insensitive substring match)
+    if league_name:
+        league_lower = league_name.lower()
+        fixtures = [
+            f for f in fixtures
+            if league_lower in f.get("league", {}).get("name", "").lower()
+        ]
+
+    # Filter by team name if provided (case-insensitive substring match for home or away)
+    if team_name:
+        team_lower = team_name.lower()
+        fixtures = [
+            f for f in fixtures
+            if (team_lower in f.get("teams", {}).get("home", {}).get("name", "").lower()
+                or team_lower in f.get("teams", {}).get("away", {}).get("name", "").lower())
+        ]
+
+    # Package response
+    response = {
+        "matches": fixtures,
+        "count": len(fixtures),
+        "date": date,
+        "status_filter": status,
+        "league_filter": league_name,
+        "team_filter": team_name,
+    }
+
+    # Cache result
+    if cache:
+        await cache.set(cache_key, response, ttl=cache_ttl)
 
     return response
