@@ -9,10 +9,48 @@ import json
 import os
 from typing import Any
 
+import boto3
+
 from sipap_intelligence_mcp.server import IntelligenceMCPServer
 
 # Initialize server (singleton for Lambda container reuse)
 _server: IntelligenceMCPServer | None = None
+
+
+def _load_api_keys_from_secrets() -> None:
+    """Load API keys from AWS Secrets Manager and inject into environment.
+
+    Reads API_KEYS_SECRET_ARN from environment and fetches:
+    - API_FOOTBALL_KEY
+    - OPENWEATHER_API_KEY
+    - NEWS_API_KEY
+
+    Sets them as environment variables for tools to access.
+    """
+    secret_arn = os.environ.get("API_KEYS_SECRET_ARN")
+    if not secret_arn:
+        # No secret ARN configured - skip (useful for local testing)
+        return
+
+    # Fetch secret from Secrets Manager
+    sm_client = boto3.client("secretsmanager", region_name="us-east-1")
+    try:
+        response = sm_client.get_secret_value(SecretId=secret_arn)
+        secret_data = json.loads(response["SecretString"])
+
+        # Inject API keys into environment for tools to access
+        if "API_FOOTBALL_KEY" in secret_data:
+            os.environ["API_FOOTBALL_KEY"] = secret_data["API_FOOTBALL_KEY"]
+
+        if "OPENWEATHER_API_KEY" in secret_data:
+            os.environ["OPENWEATHER_API_KEY"] = secret_data["OPENWEATHER_API_KEY"]
+
+        if "NEWS_API_KEY" in secret_data:
+            os.environ["NEWS_API_KEY"] = secret_data["NEWS_API_KEY"]
+
+    except Exception as e:
+        # Log error but don't fail - tools will handle missing keys gracefully
+        print(f"Warning: Failed to load API keys from Secrets Manager: {e}")
 
 
 def get_server() -> IntelligenceMCPServer:
@@ -26,6 +64,9 @@ def get_server() -> IntelligenceMCPServer:
     global _server
 
     if _server is None:
+        # Load API keys from Secrets Manager (once per cold start)
+        _load_api_keys_from_secrets()
+
         # Get configuration from environment variables (AWS Lambda environment)
         # Redis for caching weather/news data
         redis_endpoint = os.environ.get("REDIS_ENDPOINT", "localhost:6379")
