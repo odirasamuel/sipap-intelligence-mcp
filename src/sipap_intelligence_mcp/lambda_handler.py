@@ -6,12 +6,27 @@ Handles environment configuration for weather APIs and Bedrock AI services.
 
 import asyncio
 import json
+import logging
 import os
 from typing import Any
 
 import boto3
 
 from sipap_intelligence_mcp.server import IntelligenceMCPServer
+
+# Configure structured logging for CloudWatch
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    datefmt='%Y-%m-%d %H:%M:%S'
+)
+
+# Set log level from environment variable (default: INFO)
+log_level = os.environ.get('LOG_LEVEL', 'INFO').upper()
+logging.getLogger().setLevel(getattr(logging, log_level, logging.INFO))
+
+# Initialize logger for this module
+logger = logging.getLogger(__name__)
 
 # Initialize server (singleton for Lambda container reuse)
 _server: IntelligenceMCPServer | None = None
@@ -50,7 +65,7 @@ def _load_api_keys_from_secrets() -> None:
 
     except Exception as e:
         # Log error but don't fail - tools will handle missing keys gracefully
-        print(f"Warning: Failed to load API keys from Secrets Manager: {e}")
+        logger.warning(f"Failed to load API keys from Secrets Manager: {e}", exc_info=True)
 
 
 def get_server() -> IntelligenceMCPServer:
@@ -64,6 +79,8 @@ def get_server() -> IntelligenceMCPServer:
     global _server
 
     if _server is None:
+        logger.info("Cold start: Creating new Intelligence MCP server")
+
         # Load API keys from Secrets Manager (once per cold start)
         _load_api_keys_from_secrets()
 
@@ -74,11 +91,16 @@ def get_server() -> IntelligenceMCPServer:
         redis_protocol = "rediss" if redis_ssl else "redis"
         redis_url = f"{redis_protocol}://{redis_endpoint}/0"
 
+        logger.info(f"Connecting to Redis: {redis_url}")
+
         # Store config in environment for tool functions to access
         os.environ["REDIS_URL"] = redis_url
 
         # Create server instance
         _server = IntelligenceMCPServer()
+        logger.info("Intelligence MCP server initialized")
+    else:
+        logger.info("Warm start: Reusing existing Intelligence MCP server")
 
     return _server
 
@@ -95,6 +117,8 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
     Returns:
         Lambda response (JSON-RPC response or API Gateway proxy response)
     """
+    logger.info(f"Lambda invocation started (request_id: {context.aws_request_id})")
+
     # Get or create server instance
     server = get_server()
 
@@ -120,11 +144,26 @@ def handler(event: dict[str, Any], context: Any) -> dict[str, Any]:
         # Direct Lambda invocation format
         request = event
 
+    # Log the JSON-RPC request
+    logger.info(
+        "Received JSON-RPC request",
+        extra={
+            "method": request.get("method"),
+            "id": request.get("id"),
+            "params_name": request.get("params", {}).get("name") if isinstance(request.get("params"), dict) else None
+        }
+    )
+    logger.debug(f"Full request: {json.dumps(request, indent=2)}")
+
     # Handle JSON-RPC request (async)
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
         response = loop.run_until_complete(server.handle_request(request))
+        logger.debug(f"Full response: {json.dumps(response, indent=2)}")
+    except Exception as e:
+        logger.error(f"Error handling request: {e}", exc_info=True)
+        raise
     finally:
         loop.close()
 
