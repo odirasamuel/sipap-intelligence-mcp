@@ -575,10 +575,11 @@ async def get_match_results(
 
     # Filter by canonical league name + country if provided (EXACT MATCH, not substring)
     # This fixes "Armenia Premier League" matching "Premier League" (England)
+    import logging
+    logger = logging.getLogger(__name__)
+
     if canonical_league_name:
         # DEBUG: Log first 3 fixture league names for debugging
-        import logging
-        logger = logging.getLogger(__name__)
         if fixtures:
             sample_leagues = [
                 f"{f.get('league', {}).get('name', 'N/A')} ({f.get('league', {}).get('country', 'N/A')})"
@@ -608,6 +609,19 @@ async def get_match_results(
                 f"Filtered {original_count} → {len(fixtures)} fixtures "
                 f"(name='{canonical_league_name}' only, no country)"
             )
+    elif country_filter:
+        # Fallback: Filter by country only if league name not recognized
+        # This handles cases like "Wales Championship" where "Championship" isn't in mappings
+        # but we can still filter by country to show all Welsh competitions
+        original_count = len(fixtures)
+        fixtures = [
+            f for f in fixtures
+            if f.get("league", {}).get("country", "") == country_filter
+        ]
+        logger.info(
+            f"Filtered {original_count} → {len(fixtures)} fixtures "
+            f"(country='{country_filter}' only, league name not recognized)"
+        )
 
     # Filter by team name if provided (case-insensitive substring match for home or away)
     if team_name:
