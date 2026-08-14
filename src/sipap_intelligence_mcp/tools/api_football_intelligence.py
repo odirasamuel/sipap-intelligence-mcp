@@ -33,9 +33,14 @@ def _get_cache() -> RedisCache | None:
     """Get or create Redis cache (cached for warm starts)."""
     global _cache
     if _cache is None:
-        redis_endpoint = os.getenv("REDIS_ENDPOINT")
-        if redis_endpoint:
-            _cache = RedisCache(endpoint=redis_endpoint)
+        redis_host = os.getenv("REDIS_HOST")
+        redis_port = int(os.getenv("REDIS_PORT", "6379"))
+        if redis_host:
+            try:
+                _cache = RedisCache(host=redis_host, port=redis_port, db=0)
+            except Exception:
+                # If Redis initialization fails, gracefully degrade (no caching)
+                _cache = None
     return _cache
 
 
