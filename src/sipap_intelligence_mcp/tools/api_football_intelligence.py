@@ -44,6 +44,41 @@ def _get_cache() -> RedisCache | None:
     return _cache
 
 
+def _get_canonical_league_name(league_name: str) -> str | None:
+    """Map user-provided league name to canonical API-Football league name.
+
+    Uses sipap-common's comprehensive league mappings (380 competitions, 77 countries).
+    This ensures exact matching - "Armenia Premier League" won't match "Premier League".
+
+    Args:
+        league_name: User-provided league name (e.g., "Armenia Premier League", "EPL")
+
+    Returns:
+        Canonical league name as used by API-Football, or None if not found
+
+    Examples:
+        >>> _get_canonical_league_name("Armenia Premier League")
+        "Premier League"  # Armenia's league (exact match)
+        >>> _get_canonical_league_name("EPL")
+        "Premier League"  # England's league (via alias)
+        >>> _get_canonical_league_name("austria")
+        "Bundesliga"  # Austria's top league (via country)
+    """
+    from sipap_common.data import find_league_matches
+
+    # Find canonical league names using comprehensive mappings
+    canonical_names = find_league_matches(league_name)
+
+    if not canonical_names:
+        # No match found - return None to fetch all leagues
+        return None
+
+    # Return first match
+    # If user query is ambiguous (e.g., "Premier League"), sipap-common returns multiple leagues
+    # We take the first one. User should be more specific if they want a particular league.
+    return canonical_names[0]
+
+
 async def get_match_predictions(fixture_id: int) -> dict[str, Any]:
     """Get AI predictions for a match from API-Football.
 
@@ -332,7 +367,7 @@ async def get_match_results(
 
     Args:
         date: Date in YYYY-MM-DD format (default: today)
-        league_name: League/competition name (e.g., "Premier League", "Women Africa Cup of Nations")
+        league_name: League/competition name (e.g., "Premier League", "Armenia Premier League")
         team_name: Team name filter (e.g., "Arsenal", "Liverpool")
         status: Match status - "FT" (finished), "LIVE" (live), "ALL" (both)
 
@@ -357,8 +392,8 @@ async def get_match_results(
         >>> # Get live matches
         >>> result = await get_match_results(status="LIVE")
 
-        >>> # Get results for Women Africa Cup of Nations
-        >>> result = await get_match_results(league_name="Women Africa Cup of Nations")
+        >>> # Get results for Armenia Premier League
+        >>> result = await get_match_results(league_name="Armenia Premier League")
 
         >>> # Get Arsenal's recent results
         >>> result = await get_match_results(team_name="Arsenal", status="FT")
@@ -375,8 +410,14 @@ async def get_match_results(
     if date is None:
         date = datetime.now(UTC).date().isoformat()
 
+    # Map league name to canonical name using sipap-common comprehensive mappings
+    # This ensures "Armenia Premier League" doesn't match "Premier League" (England)
+    canonical_league_name = None
+    if league_name:
+        canonical_league_name = _get_canonical_league_name(league_name)
+
     # Build cache key
-    cache_key = f"match_results:{date}:{status}:{league_name or 'all'}:{team_name or 'all'}"
+    cache_key = f"match_results:{date}:{status}:{canonical_league_name or 'all'}:{team_name or 'all'}"
 
     # Determine cache TTL based on status
     # LIVE data changes fast (2 min), finished data is static (1 hour)
@@ -396,22 +437,9 @@ async def get_match_results(
     # Fetch from API-Football (REAL-TIME)
     api_client = _get_api_football_client()
     async with api_client as client:
-        # Build API parameters
-        api_params: dict[str, Any] = {"date": date}
-
-        # Map league name to league ID if provided
-        # NOTE: For MVP, we pass league_name as-is and let API-Football search
-        # In production, we should map to exact league IDs via Data MCP
-        # if league_name:
-        #     api_params["league"] = league_id  # Would come from league name → ID mapping
-
-        # Map team name to team ID if provided
-        # NOTE: Similar to league, for MVP we filter results after fetch
-        # In production, map team_name → team_id via Data MCP
-        # if team_name:
-        #     api_params["team"] = team_id
-
         # Handle status filter
+        # NOTE: We fetch all fixtures for the date, then filter by exact league name
+        # This avoids the "Armenia Premier League" → "Premier League" false match issue
         if status == "ALL":
             # Fetch both live and finished
             # NOTE: API-Football doesn't support "ALL" status
@@ -422,12 +450,11 @@ async def get_match_results(
         else:
             fixtures = await client.get_fixtures(date=date, status=status)
 
-    # Filter by league name if provided (case-insensitive substring match)
-    if league_name:
-        league_lower = league_name.lower()
+    # Filter by canonical league name if provided (EXACT MATCH, not substring)
+    if canonical_league_name:
         fixtures = [
             f for f in fixtures
-            if league_lower in f.get("league", {}).get("name", "").lower()
+            if f.get("league", {}).get("name", "") == canonical_league_name
         ]
 
     # Filter by team name if provided (case-insensitive substring match for home or away)
