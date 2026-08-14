@@ -50,11 +50,16 @@ def _get_canonical_league_name(league_name: str) -> tuple[str | None, str | None
     Uses sipap-common's comprehensive league mappings (380 competitions, 77 countries).
     Extracts country context to disambiguate leagues with same names (e.g., "Premier League").
 
+    IMPORTANT: International/continental tournaments (UEFA, FIFA, CONMEBOL, etc.) are labeled
+    as country="World" by API-Football, NOT the host country. We detect these and return
+    country=None to avoid filtering by host country.
+
     Args:
         league_name: User-provided league name (e.g., "Armenia Premier League", "Austria league")
 
     Returns:
         Tuple of (canonical_league_name, country_name) or (None, None) if not found
+        For international tournaments, country_name is ALWAYS None (labeled as "World" in API-Football)
 
     Examples:
         >>> _get_canonical_league_name("Armenia Premier League")
@@ -63,8 +68,54 @@ def _get_canonical_league_name(league_name: str) -> tuple[str | None, str | None
         ("Bundesliga", "Austria")
         >>> _get_canonical_league_name("EPL")
         ("Premier League", "England")
+        >>> _get_canonical_league_name("World Cup in Qatar")
+        ("World Cup", None)  # Ignore "Qatar" - it's the host, not country classification
+        >>> _get_canonical_league_name("Champions League")
+        ("UEFA Champions League", None)  # International tournament
     """
     from sipap_common.data import find_league_matches
+
+    # International/continental tournaments (API-Football labels as country="World")
+    # Do NOT filter by country for these, even if user mentions a country (it's the host)
+    INTERNATIONAL_TOURNAMENTS = {
+        "uefa champions league",
+        "uefa europa league",
+        "uefa europa conference league",
+        "uefa nations league",
+        "uefa super cup",
+        "uefa youth league",
+        "uefa championship - women",
+        "uefa championship - women - qualification",
+        "uefa europa cup - women",
+        "uefa nations league - women",
+        "champions league women",
+        "world cup",
+        "world cup - women",
+        "world cup - qualification",
+        "world cup - u17",
+        "world cup - u20",
+        "euro championship",
+        "euro championship - qualification",
+        "copa america",
+        "africa cup of nations",
+        "asia cup",
+        "asian cup",
+        "concacaf gold cup",
+        "concacaf nations league",
+        "conmebol libertadores",
+        "conmebol sudamericana",
+        "caf champions league",
+        "caf confederation cup",
+        "afc champions league",
+        "concacaf champions league",
+        "fifa club world cup",
+        "fifa intercontinental cup",
+        "confederations cup",
+        "arab cup",
+        "friendlies",
+        "friendlies clubs",
+        "international champions cup",
+    }
 
     # Common country name mappings for API-Football
     # Comprehensive list covering 77 countries in sipap-common mappings
@@ -190,8 +241,15 @@ def _get_canonical_league_name(league_name: str) -> tuple[str | None, str | None
         # No match found - return None
         return (None, country)
 
-    # Return first match with extracted country
-    return (canonical_names[0], country)
+    canonical_league_name = canonical_names[0]
+
+    # Check if this is an international tournament
+    # API-Football labels these as country="World", NOT the host country
+    # Override country to None to avoid filtering by host (e.g., "World Cup in Qatar")
+    if canonical_league_name.lower() in INTERNATIONAL_TOURNAMENTS:
+        country = None  # Force None - these are country="World" in API-Football
+
+    return (canonical_league_name, country)
 
 
 async def get_match_predictions(fixture_id: int) -> dict[str, Any]:
