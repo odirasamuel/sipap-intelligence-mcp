@@ -278,50 +278,40 @@ def _get_canonical_league_name(league_name: str, user_query: str | None = None) 
             country = official_name
             break
 
-    # INTELLIGENT MATCHING: If country found, match ONLY against that country's leagues
-    if country and country.lower() in COUNTRY_TO_LEAGUES:
+    # IMPROVED MATCHING STRATEGY:
+    # 1. Use find_league_matches() to leverage comprehensive alias system (handles "laliga" → "La Liga")
+    # 2. If country is known, validate that the canonical name is in that country's leagues
+    # 3. This combines alias resolution with country filtering
+
+    import logging
+    logger = logging.getLogger(__name__)
+
+    canonical_names = find_league_matches(league_name)
+    canonical_league_name = canonical_names[0] if canonical_names else None
+
+    logger.info(
+        f"Alias resolution: '{league_name}' → canonical={canonical_names}, country={country}",
+        extra={"league_name": league_name, "canonical": canonical_names, "country": country}
+    )
+
+    # If country found, validate the canonical name is in that country's leagues
+    if country and canonical_league_name and country.lower() in COUNTRY_TO_LEAGUES:
         country_leagues = COUNTRY_TO_LEAGUES[country.lower()]
 
-        # Try to match league name portion against this country's specific leagues
-        league_portion = league_name.lower()
-
-        # Remove country references to isolate league name
-        for variant in COUNTRY_VARIANTS:
-            league_portion = league_portion.replace(variant, "").strip()
-
-        # Match against this country's leagues
-        best_match = None
-        best_score = 0
-
-        for country_league in country_leagues:
-            country_league_lower = country_league.lower()
-
-            # Exact match (highest priority)
-            if league_portion == country_league_lower:
-                best_match = country_league
-                best_score = 100
-                break
-
-            # Substring match (e.g., "liga" matches "Liga I")
-            if league_portion in country_league_lower or country_league_lower in league_portion:
-                score = 80
-                if score > best_score:
-                    best_match = country_league
-                    best_score = score
-
-        if best_match:
-            canonical_league_name = best_match
-        else:
-            # Fallback to generic matching if no country-specific match
-            canonical_names = find_league_matches(league_name)
-            canonical_league_name = canonical_names[0] if canonical_names else None
-    else:
-        # No country found or not in our mappings - use generic matching
-        canonical_names = find_league_matches(league_name)
-        canonical_league_name = canonical_names[0] if canonical_names else None
+        # Check if canonical name is in this country's leagues (case-insensitive)
+        country_leagues_lower = [cl.lower() for cl in country_leagues]
+        if canonical_league_name.lower() not in country_leagues_lower:
+            # Canonical name doesn't belong to this country - likely wrong match
+            # Example: "Spanish League" → "Premier League" (generic fallback) → not in Spain's leagues
+            logger.warning(
+                f"Country mismatch: '{canonical_league_name}' not in {country}'s leagues {country_leagues}",
+                extra={"canonical": canonical_league_name, "country": country, "country_leagues": country_leagues}
+            )
+            canonical_league_name = None
 
     if not canonical_league_name:
         # No match found - return None
+        logger.info(f"No valid match found for '{league_name}' in country '{country}'")
         return (None, country)
 
     # Check if this is an international tournament
