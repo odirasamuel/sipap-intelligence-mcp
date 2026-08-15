@@ -661,9 +661,20 @@ async def get_match_results(
                 # Odds fetching is optional - don't fail the whole request if it fails
                 logger.warning(f"Failed to fetch odds (continuing without odds): {e}")
 
-    # ID-FIRST: API already filtered by league_id - minimal client-side filtering needed
-    # Only filter by country if league_ids weren't provided (fallback for generic queries)
-    if not resolved_league_ids and country_filter:
+    # SAFETY FILTER: Verify fixtures match requested league IDs
+    # API-Football sometimes returns fixtures from unexpected leagues
+    if resolved_league_ids:
+        original_count = len(fixtures)
+        fixtures = [
+            f for f in fixtures
+            if f.get("league", {}).get("id") in resolved_league_ids
+        ]
+        if len(fixtures) != original_count:
+            logger.warning(
+                f"League ID mismatch filter: {original_count} → {len(fixtures)} fixtures "
+                f"(requested IDs: {resolved_league_ids})"
+            )
+    elif country_filter:
         # Fallback: Filter by country only if league_id not resolved
         # This handles cases like "[Country] league results" without specific league
         original_count = len(fixtures)
