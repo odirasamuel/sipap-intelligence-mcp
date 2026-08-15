@@ -521,3 +521,60 @@ class APIFootballIntelligenceClient:
             raise IntelligenceMCPException(f"HTTP error fetching odds: {str(e)}") from e
         except Exception as e:
             raise IntelligenceMCPException(f"Error fetching odds: {str(e)}") from e
+
+    async def get_odds_mapping(
+        self,
+        page: int = 1,
+    ) -> dict[str, Any]:
+        """
+        Get mapping of fixture IDs that have odds available.
+
+        Use this endpoint to discover which fixtures have odds data before
+        making individual odds requests. Returns fixture IDs with pagination.
+
+        API Endpoint: GET /odds/mapping
+        Update Frequency: Continuous (as odds become available)
+
+        Args:
+            page: Page number for pagination (default: 1)
+
+        Returns:
+            Dictionary with:
+                - fixture_ids: List of fixture IDs with available odds
+                - paging: Pagination info (current, total)
+
+        Example:
+            >>> mapping = await client.get_odds_mapping()
+            >>> 12345 in mapping['fixture_ids']
+            True
+        """
+        if not self._client:
+            raise RuntimeError("Client not initialized. Use 'async with' context manager")
+
+        url = f"{self.BASE_URL}/odds/mapping"
+        params: dict[str, int] = {"page": page}
+
+        try:
+            response = await self._client.get(url, headers=self._get_headers(), params=params)
+            response.raise_for_status()
+            data = response.json()
+
+            if data.get("errors") and len(data["errors"]) > 0:
+                raise IntelligenceMCPException(f"API-Football error: {data['errors']}")
+
+            # Extract fixture IDs from response
+            fixture_ids = [
+                item.get("fixture")
+                for item in data.get("response", [])
+                if item.get("fixture")
+            ]
+
+            return {
+                "fixture_ids": fixture_ids,
+                "paging": data.get("paging", {}),
+            }
+
+        except httpx.HTTPError as e:
+            raise IntelligenceMCPException(f"HTTP error fetching odds mapping: {str(e)}") from e
+        except Exception as e:
+            raise IntelligenceMCPException(f"Error fetching odds mapping: {str(e)}") from e

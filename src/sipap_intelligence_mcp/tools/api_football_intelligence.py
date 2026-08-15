@@ -642,14 +642,20 @@ async def get_match_results(
                         # Extract best odds for each fixture
                         best_odds = _extract_best_odds(odds_data)
 
-                        # Debug: Log fixture ID matching
+                        # Debug: Log fixture ID matching with details
                         odds_fixture_ids = set(best_odds.keys())
                         requested_fixture_ids = set(fixture_ids)
                         matching_ids = requested_fixture_ids & odds_fixture_ids
+                        missing_ids = requested_fixture_ids - odds_fixture_ids
                         logger.info(
                             f"Odds matching: {len(requested_fixture_ids)} requested, "
-                            f"{len(odds_fixture_ids)} available, {len(matching_ids)} match"
+                            f"{len(odds_fixture_ids)} available in API response, {len(matching_ids)} match"
                         )
+                        if missing_ids:
+                            logger.info(f"Fixture IDs missing odds: {sorted(list(missing_ids))[:10]}{'...' if len(missing_ids) > 10 else ''}")
+                        # Log sample of requested vs available for debugging
+                        logger.info(f"Sample requested IDs: {sorted(list(requested_fixture_ids))[:5]}")
+                        logger.info(f"Sample available IDs: {sorted(list(odds_fixture_ids))[:5]}")
 
                         # Merge odds into fixtures
                         odds_count = 0
