@@ -687,7 +687,14 @@ async def get_match_results(
             if league_info and league_info.get("country"):
                 expected_countries.add(league_info["country"])
 
+        logger.info(f"Safety filter setup: expected_countries={expected_countries} for league_ids={resolved_league_ids}")
+
         original_count = len(fixtures)
+
+        # Debug: Log all fixture countries before filtering
+        fixture_countries = set(f.get("league", {}).get("country", "UNKNOWN") for f in fixtures)
+        fixture_leagues = [(f.get("league", {}).get("id"), f.get("league", {}).get("name"), f.get("league", {}).get("country")) for f in fixtures[:5]]
+        logger.info(f"Before filter: {len(fixtures)} fixtures, countries={fixture_countries}, sample leagues={fixture_leagues}")
 
         # Filter by BOTH league ID AND country to catch data inconsistencies
         if expected_countries:
@@ -708,6 +715,8 @@ async def get_match_results(
                 f"Safety filter: {original_count} → {len(fixtures)} fixtures "
                 f"(requested IDs: {resolved_league_ids}, expected countries: {expected_countries})"
             )
+        else:
+            logger.info(f"Safety filter: All {len(fixtures)} fixtures passed (no mismatches found)")
     elif country_filter:
         # Fallback: Filter by country only if league_id not resolved
         # This handles cases like "[Country] league results" without specific league
