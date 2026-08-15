@@ -44,11 +44,18 @@ def _get_cache() -> RedisCache | None:
     return _cache
 
 
-def _get_canonical_league_name(league_name: str) -> tuple[str | None, str | None]:
+def _get_canonical_league_name(league_name: str, user_query: str | None = None) -> tuple[str | None, str | None]:
     """Map user-provided league name to canonical name and extract country.
 
     Uses sipap-common's comprehensive league mappings (380 competitions, 77 countries).
     Extracts country context to disambiguate leagues with same names (e.g., "Premier League").
+
+    UNIVERSAL MATCHING STRATEGY:
+    When user_query is provided, uses intelligent context-aware matching:
+    1. Extract country from FULL query context
+    2. Look up that country's specific leagues in sipap-common's COUNTRY_TO_LEAGUES
+    3. Match league name portion ONLY against that country's leagues
+    4. Eliminates "Belarus league" → "Premier League (England)" false matches
 
     IMPORTANT: International/continental tournaments (UEFA, FIFA, CONMEBOL, etc.) are labeled
     as country="World" by API-Football, NOT the host country. We detect these and return
@@ -56,16 +63,17 @@ def _get_canonical_league_name(league_name: str) -> tuple[str | None, str | None
 
     Args:
         league_name: User-provided league name (e.g., "Armenia Premier League", "Austria league")
+        user_query: FULL user query for context-aware matching (RECOMMENDED)
 
     Returns:
         Tuple of (canonical_league_name, country_name) or (None, None) if not found
         For international tournaments, country_name is ALWAYS None (labeled as "World" in API-Football)
 
     Examples:
-        >>> _get_canonical_league_name("Armenia Premier League")
-        ("Premier League", "Armenia")
-        >>> _get_canonical_league_name("Austria league")
-        ("Bundesliga", "Austria")
+        >>> _get_canonical_league_name("Belarus league", "Belarus league results yesterday")
+        ("Premier League", "Belarus")  # Correctly matches Belarus Premier League
+        >>> _get_canonical_league_name("Spanish LaLiga", "Spanish LaLiga fixtures today")
+        ("LaLiga", "Spain")  # Correctly matches Spain's LaLiga
         >>> _get_canonical_league_name("EPL")
         ("Premier League", "England")
         >>> _get_canonical_league_name("World Cup in Qatar")
@@ -73,7 +81,7 @@ def _get_canonical_league_name(league_name: str) -> tuple[str | None, str | None
         >>> _get_canonical_league_name("Champions League")
         ("UEFA Champions League", None)  # International tournament
     """
-    from sipap_common.data import find_league_matches
+    from sipap_common.data import find_league_matches, COUNTRY_TO_LEAGUES
 
     # International/continental tournaments (API-Football labels as country="World")
     # Do NOT filter by country for these, even if user mentions a country (it's the host)
@@ -259,22 +267,62 @@ def _get_canonical_league_name(league_name: str) -> tuple[str | None, str | None
         "zimbabwe": "Zimbabwe",
     }
 
-    # Extract country from user query if present
-    league_lower = league_name.lower()
+    # UNIVERSAL MATCHING: Use full user query if provided for better context
+    query_to_analyze = user_query if user_query else league_name
+    query_lower = query_to_analyze.lower()
+
+    # Extract country from query (prioritize full query context)
     country = None
     for variant, official_name in COUNTRY_VARIANTS.items():
-        if variant in league_lower:
+        if variant in query_lower:
             country = official_name
             break
 
-    # Find canonical league names using comprehensive mappings
-    canonical_names = find_league_matches(league_name)
+    # INTELLIGENT MATCHING: If country found, match ONLY against that country's leagues
+    if country and country.lower() in COUNTRY_TO_LEAGUES:
+        country_leagues = COUNTRY_TO_LEAGUES[country.lower()]
 
-    if not canonical_names:
+        # Try to match league name portion against this country's specific leagues
+        league_portion = league_name.lower()
+
+        # Remove country references to isolate league name
+        for variant in COUNTRY_VARIANTS:
+            league_portion = league_portion.replace(variant, "").strip()
+
+        # Match against this country's leagues
+        best_match = None
+        best_score = 0
+
+        for country_league in country_leagues:
+            country_league_lower = country_league.lower()
+
+            # Exact match (highest priority)
+            if league_portion == country_league_lower:
+                best_match = country_league
+                best_score = 100
+                break
+
+            # Substring match (e.g., "liga" matches "Liga I")
+            if league_portion in country_league_lower or country_league_lower in league_portion:
+                score = 80
+                if score > best_score:
+                    best_match = country_league
+                    best_score = score
+
+        if best_match:
+            canonical_league_name = best_match
+        else:
+            # Fallback to generic matching if no country-specific match
+            canonical_names = find_league_matches(league_name)
+            canonical_league_name = canonical_names[0] if canonical_names else None
+    else:
+        # No country found or not in our mappings - use generic matching
+        canonical_names = find_league_matches(league_name)
+        canonical_league_name = canonical_names[0] if canonical_names else None
+
+    if not canonical_league_name:
         # No match found - return None
         return (None, country)
-
-    canonical_league_name = canonical_names[0]
 
     # Check if this is an international tournament
     # API-Football labels these as country="World", NOT the host country
@@ -546,6 +594,7 @@ async def get_match_results(
     league_name: str | None = None,
     team_name: str | None = None,
     status: str = "FT",
+    user_query: str | None = None,
 ) -> dict[str, Any]:
     """Get live or completed match results from API-Football (REAL-TIME DATA).
 
@@ -565,6 +614,13 @@ async def get_match_results(
         - "AET" - Finished after extra time
         - "PEN" - Finished after penalty shootout
         - "ALL" - All statuses (FT + LIVE + AET + PEN)
+
+    Args:
+        date: Date in YYYY-MM-DD format (default: today)
+        league_name: League/competition name (DEPRECATED - use user_query instead)
+        team_name: Team name filter
+        status: Match status filter
+        user_query: FULL user query for intelligent league matching (RECOMMENDED)
 
     Caching Strategy:
     - Cache TTL: 2 minutes for LIVE (fast-changing)
@@ -617,16 +673,20 @@ async def get_match_results(
         date = datetime.now(UTC).date().isoformat()
 
     # Map league name to canonical name + country using sipap-common comprehensive mappings
-    # This ensures "Armenia Premier League" doesn't match "Premier League" (England)
+    # UNIVERSAL MATCHING: Pass full user_query for context-aware matching
+    # This ensures "Belarus league" matches "Premier League (Belarus)", not "Premier League (England)"
     canonical_league_name = None
     country_filter = None
     if league_name:
-        canonical_league_name, country_filter = _get_canonical_league_name(league_name)
+        canonical_league_name, country_filter = _get_canonical_league_name(
+            league_name, user_query=user_query
+        )
         # DEBUG: Log what we extracted
         import logging
         logger = logging.getLogger(__name__)
         logger.info(
-            f"League mapping: '{league_name}' → canonical='{canonical_league_name}', country='{country_filter}'"
+            f"League mapping: '{league_name}' (query='{user_query}') → "
+            f"canonical='{canonical_league_name}', country='{country_filter}'"
         )
 
     # Build cache key
