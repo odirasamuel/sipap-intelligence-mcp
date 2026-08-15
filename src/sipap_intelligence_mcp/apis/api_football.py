@@ -488,15 +488,34 @@ class APIFootballIntelligenceClient:
             params["bookmaker"] = bookmaker_id
 
         try:
-            response = await self._client.get(url, headers=self._get_headers(), params=params)
-            response.raise_for_status()
-            data = response.json()
+            # Handle pagination - API returns 10 results per page
+            all_results: list[dict[str, Any]] = []
+            page = 1
+            max_pages = 20  # Safety limit to prevent infinite loops
 
-            if data.get("errors") and len(data["errors"]) > 0:
-                raise IntelligenceMCPException(f"API-Football error: {data['errors']}")
+            while page <= max_pages:
+                params["page"] = page
+                response = await self._client.get(url, headers=self._get_headers(), params=params)
+                response.raise_for_status()
+                data = response.json()
 
-            result: list[dict[str, Any]] = data.get("response", [])
-            return result
+                if data.get("errors") and len(data["errors"]) > 0:
+                    raise IntelligenceMCPException(f"API-Football error: {data['errors']}")
+
+                page_results = data.get("response", [])
+                all_results.extend(page_results)
+
+                # Check if there are more pages
+                paging = data.get("paging", {})
+                current_page = paging.get("current", page)
+                total_pages = paging.get("total", 1)
+
+                if current_page >= total_pages:
+                    break  # No more pages
+
+                page += 1
+
+            return all_results
 
         except httpx.HTTPError as e:
             raise IntelligenceMCPException(f"HTTP error fetching odds: {str(e)}") from e
