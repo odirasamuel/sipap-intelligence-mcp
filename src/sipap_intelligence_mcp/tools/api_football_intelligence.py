@@ -118,13 +118,31 @@ def _get_canonical_league_name(league_name: str) -> tuple[str | None, str | None
     }
 
     # Common country name mappings for API-Football
+    # Includes adjectives (Spanish, English, French, etc.) for natural language queries
     # Comprehensive list covering 77 countries in sipap-common mappings
     COUNTRY_VARIANTS = {
         # Europe
         "albania": "Albania",
+        "albanian": "Albania",
         "andorra": "Andorra",
+        "andorran": "Andorra",
         "armenia": "Armenia",
+        "armenian": "Armenia",
         "austria": "Austria",
+        "austrian": "Austria",
+        "spanish": "Spain",  # "Spanish LaLiga"
+        "english": "England",  # "English Premier League"
+        "french": "France",  # "French Ligue 1"
+        "german": "Germany",  # "German Bundesliga"
+        "italian": "Italy",  # "Italian Serie A"
+        "portuguese": "Portugal",  # "Portuguese Liga"
+        "dutch": "Netherlands",  # "Dutch Eredivisie"
+        "belgian": "Belgium",  # "Belgian Pro League"
+        "turkish": "Turkey",  # "Turkish Super Lig"
+        "greek": "Greece",  # "Greek Super League"
+        "scottish": "Scotland",  # "Scottish Premiership"
+        "welsh": "Wales",  # "Welsh Premier League"
+        "irish": "Ireland",  # "Irish Premier Division"
         "azerbaijan": "Azerbaijan",
         "belarus": "Belarus",
         "belgium": "Belgium",
@@ -176,21 +194,36 @@ def _get_canonical_league_name(league_name: str) -> tuple[str | None, str | None
         "wales": "Wales",
         # Americas
         "argentina": "Argentina",
+        "argentinian": "Argentina",
+        "bolivian": "Bolivia",
         "bolivia": "Bolivia",
         "brazil": "Brazil",
+        "brazilian": "Brazil",
         "canada": "Canada",
+        "canadian": "Canada",
         "chile": "Chile",
+        "chilean": "Chile",
         "colombia": "Colombia",
+        "colombian": "Colombia",
         "costa-rica": "Costa-Rica",
+        "costa-rican": "Costa-Rica",
         "ecuador": "Ecuador",
+        "ecuadorian": "Ecuador",
         "jamaica": "Jamaica",
+        "jamaican": "Jamaica",
         "mexico": "Mexico",
+        "mexican": "Mexico",
         "paraguay": "Paraguay",
+        "paraguayan": "Paraguay",
         "peru": "Peru",
+        "peruvian": "Peru",
         "usa": "USA",
         "united-states": "USA",
+        "american": "USA",
         "uruguay": "Uruguay",
+        "uruguayan": "Uruguay",
         "venezuela": "Venezuela",
+        "venezuelan": "Venezuela",
         # Asia
         "australia": "Australia",
         "bahrain": "Bahrain",
