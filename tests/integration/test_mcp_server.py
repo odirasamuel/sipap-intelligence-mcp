@@ -17,7 +17,7 @@ class TestMCPServerProtocol:
 
     @pytest.mark.asyncio
     async def test_tools_list_returns_all_tools(self):
-        """Test tools/list returns all 9 registered tools."""
+        """Test tools/list returns all 10 registered tools."""
         server = IntelligenceMCPServer()
         request = {
             "jsonrpc": "2.0",
@@ -34,7 +34,7 @@ class TestMCPServerProtocol:
         assert "tools" in response["result"]
 
         tools = response["result"]["tools"]
-        assert len(tools) == 9
+        assert len(tools) == 10
 
         # Verify all expected tools are present
         tool_names = {tool["name"] for tool in tools}
@@ -47,7 +47,8 @@ class TestMCPServerProtocol:
             "get_match_predictions",
             "get_sidelined_players",
             "get_player_transfers",
-            "get_available_timezones"
+            "get_available_timezones",
+            "get_match_results",  # Real-time match results
         }
         assert tool_names == expected_tools
 

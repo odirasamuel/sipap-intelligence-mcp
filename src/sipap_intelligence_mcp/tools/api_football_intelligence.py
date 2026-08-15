@@ -44,104 +44,82 @@ def _get_cache() -> RedisCache | None:
     return _cache
 
 
-def _get_canonical_league_name(league_name: str, user_query: str | None = None) -> tuple[str | None, str | None]:
-    """Map user-provided league name to canonical name and extract country.
+def _resolve_league_to_id(league_name: str, user_query: str | None = None) -> tuple[int | None, str | None, str | None]:
+    """Resolve user-provided league name to API-Football ID using ID-first architecture.
 
-    Uses sipap-common's comprehensive league mappings (380 competitions, 77 countries).
-    Extracts country context to disambiguate leagues with same names (e.g., "Premier League").
+    Uses sipap-common's league_reference.py for unambiguous resolution via API-Football IDs.
+    This eliminates string matching ambiguity (e.g., "Premier League" exists in multiple countries).
 
-    UNIVERSAL MATCHING STRATEGY:
-    When user_query is provided, uses intelligent context-aware matching:
-    1. Extract country from FULL query context
-    2. Look up that country's specific leagues in sipap-common's COUNTRY_TO_LEAGUES
-    3. Match league name portion ONLY against that country's leagues
-    4. Eliminates "Belarus league" → "Premier League (England)" false matches
-
-    IMPORTANT: International/continental tournaments (UEFA, FIFA, CONMEBOL, etc.) are labeled
-    as country="World" by API-Football, NOT the host country. We detect these and return
-    country=None to avoid filtering by host country.
+    ID-FIRST ARCHITECTURE:
+    - Returns API-Football league ID (e.g., 140 for La Liga, 39 for Premier League England)
+    - ID is used directly in API calls: `get_fixtures(league_id=140)`
+    - No more client-side string filtering needed
 
     Args:
         league_name: User-provided league name (e.g., "Armenia Premier League", "Austria league")
         user_query: FULL user query for context-aware matching (RECOMMENDED)
 
     Returns:
-        Tuple of (canonical_league_name, country_name) or (None, None) if not found
-        For international tournaments, country_name is ALWAYS None (labeled as "World" in API-Football)
+        Tuple of (league_id, canonical_name, country) or (None, None, None) if not found
+        - league_id: API-Football competition ID (e.g., 140)
+        - canonical_name: Official league name (e.g., "La Liga")
+        - country: Country name or None for international tournaments
 
     Examples:
-        >>> _get_canonical_league_name("Belarus league", "Belarus league results yesterday")
-        ("Premier League", "Belarus")  # Correctly matches Belarus Premier League
-        >>> _get_canonical_league_name("Spanish LaLiga", "Spanish LaLiga fixtures today")
-        ("LaLiga", "Spain")  # Correctly matches Spain's LaLiga
-        >>> _get_canonical_league_name("EPL")
-        ("Premier League", "England")
-        >>> _get_canonical_league_name("World Cup in Qatar")
-        ("World Cup", None)  # Ignore "Qatar" - it's the host, not country classification
-        >>> _get_canonical_league_name("Champions League")
-        ("UEFA Champions League", None)  # International tournament
+        >>> _resolve_league_to_id("Belarus league", "Belarus league results yesterday")
+        (117, "Premier League", "Belarus")  # Belarus Premier League ID
+        >>> _resolve_league_to_id("Spanish LaLiga", "Spanish LaLiga fixtures today")
+        (140, "La Liga", "Spain")  # La Liga ID
+        >>> _resolve_league_to_id("EPL")
+        (39, "Premier League", "England")  # Premier League England ID
+        >>> _resolve_league_to_id("Champions League")
+        (2, "UEFA Champions League", None)  # International tournament
     """
-    from sipap_common.data import (
-        COUNTRY_TO_LEAGUES,
-        COUNTRY_VARIANTS,
-        INTERNATIONAL_TOURNAMENTS,
-        find_league_matches,
-    )
-
-    # UNIVERSAL MATCHING: Use full user query if provided for better context
-    query_to_analyze = user_query if user_query else league_name
-    query_lower = query_to_analyze.lower()
-
-    # Extract country from query (prioritize full query context)
-    country = None
-    for variant, official_name in COUNTRY_VARIANTS.items():
-        if variant in query_lower:
-            country = official_name
-            break
-
-    # IMPROVED MATCHING STRATEGY:
-    # 1. Use find_league_matches() to leverage comprehensive alias system (handles "laliga" → "La Liga")
-    # 2. If country is known, validate that the canonical name is in that country's leagues
-    # 3. This combines alias resolution with country filtering
+    from sipap_common.data.league_reference import resolve_league_query
 
     import logging
     logger = logging.getLogger(__name__)
 
-    canonical_names = find_league_matches(league_name)
-    canonical_league_name = canonical_names[0] if canonical_names else None
+    # Use full user query for better context if provided
+    query_to_resolve = user_query if user_query else league_name
+
+    # ID-FIRST: Resolve to API-Football IDs
+    resolved = resolve_league_query(query_to_resolve)
+
+    if not resolved:
+        # Fallback: Try resolving just the league_name
+        resolved = resolve_league_query(league_name)
+
+    if not resolved:
+        logger.info(f"No league match found for '{league_name}' (query='{user_query}')")
+        return (None, None, None)
+
+    # Take the first match (highest priority)
+    league = resolved[0]
+    league_id = league["id"]
+    canonical_name = league["name"]
+    country = league.get("country")
+
+    # International tournaments have country="World" - set to None for API filtering
+    if country == "World":
+        country = None
 
     logger.info(
-        f"Alias resolution: '{league_name}' → canonical={canonical_names}, country={country}",
-        extra={"league_name": league_name, "canonical": canonical_names, "country": country}
+        f"ID-first resolution: '{league_name}' → ID {league_id} ({canonical_name}, {country})",
+        extra={"league_name": league_name, "league_id": league_id, "canonical": canonical_name, "country": country}
     )
 
-    # If country found, validate the canonical name is in that country's leagues
-    if country and canonical_league_name and country.lower() in COUNTRY_TO_LEAGUES:
-        country_leagues = COUNTRY_TO_LEAGUES[country.lower()]
+    return (league_id, canonical_name, country)
 
-        # Check if canonical name is in this country's leagues (case-insensitive)
-        country_leagues_lower = [cl.lower() for cl in country_leagues]
-        if canonical_league_name.lower() not in country_leagues_lower:
-            # Canonical name doesn't belong to this country - likely wrong match
-            # Example: "Spanish League" → "Premier League" (generic fallback) → not in Spain's leagues
-            logger.warning(
-                f"Country mismatch: '{canonical_league_name}' not in {country}'s leagues {country_leagues}",
-                extra={"canonical": canonical_league_name, "country": country, "country_leagues": country_leagues}
-            )
-            canonical_league_name = None
 
-    if not canonical_league_name:
-        # No match found - return None
-        logger.info(f"No valid match found for '{league_name}' in country '{country}'")
-        return (None, country)
+# Legacy wrapper for backwards compatibility
+def _get_canonical_league_name(league_name: str, user_query: str | None = None) -> tuple[str | None, str | None]:
+    """DEPRECATED: Use _resolve_league_to_id() for ID-first architecture.
 
-    # Check if this is an international tournament
-    # API-Football labels these as country="World", NOT the host country
-    # Override country to None to avoid filtering by host (e.g., "World Cup in Qatar")
-    if canonical_league_name.lower() in INTERNATIONAL_TOURNAMENTS:
-        country = None  # Force None - these are country="World" in API-Football
-
-    return (canonical_league_name, country)
+    This wrapper exists for backwards compatibility but internally uses ID-first resolution.
+    """
+    _, canonical_name, country = _resolve_league_to_id(league_name, user_query)
+    return (canonical_name, country)
 
 
 async def get_match_predictions(fixture_id: int) -> dict[str, Any]:
@@ -478,30 +456,30 @@ async def get_match_results(
         ... )
     """
     from datetime import UTC, datetime
+    import logging
+    logger = logging.getLogger(__name__)
 
     # Default to today if no date provided
     if date is None:
         date = datetime.now(UTC).date().isoformat()
 
-    # Map league name to canonical name + country using sipap-common comprehensive mappings
-    # UNIVERSAL MATCHING: Pass full user_query for context-aware matching
-    # This ensures "Belarus league" matches "Premier League (Belarus)", not "Premier League (England)"
-    canonical_league_name = None
-    country_filter = None
+    # ID-FIRST ARCHITECTURE: Resolve league to API-Football ID
+    # This eliminates string matching ambiguity and enables efficient server-side filtering
+    league_id: int | None = None
+    canonical_league_name: str | None = None
+    country_filter: str | None = None
+
     if league_name:
-        canonical_league_name, country_filter = _get_canonical_league_name(
+        league_id, canonical_league_name, country_filter = _resolve_league_to_id(
             league_name, user_query=user_query
         )
-        # DEBUG: Log what we extracted
-        import logging
-        logger = logging.getLogger(__name__)
         logger.info(
-            f"League mapping: '{league_name}' (query='{user_query}') → "
-            f"canonical='{canonical_league_name}', country='{country_filter}'"
+            f"ID-first resolution: '{league_name}' → ID {league_id} "
+            f"(canonical='{canonical_league_name}', country='{country_filter}')"
         )
 
-    # Build cache key
-    cache_filter = f"{canonical_league_name or 'all'}-{country_filter or 'all'}"
+    # Build cache key (include league_id for uniqueness)
+    cache_filter = f"{league_id or 'all'}-{canonical_league_name or 'all'}-{country_filter or 'all'}"
     cache_key = f"match_results:{date}:{status}:{cache_filter}:{team_name or 'all'}"
 
     # Determine cache TTL based on status
@@ -520,69 +498,36 @@ async def get_match_results(
             return result
 
     # Fetch from API-Football (REAL-TIME)
+    # ID-FIRST: Pass league_id directly to API for efficient server-side filtering
     api_client = _get_api_football_client()
     async with api_client as client:
         # Handle status filter
-        # NOTE: We fetch all fixtures for the date, then filter by exact league name
-        # This avoids the "Armenia Premier League" → "Premier League" false match issue
+        # NOTE: With ID-first architecture, API handles league filtering - no client-side needed
         if status == "ALL":
             # Fetch both live and finished
             # NOTE: API-Football doesn't support "ALL" status
             # We need to make 2 calls and merge results
-            live_fixtures = await client.get_fixtures(date=date, status="LIVE")
-            finished_fixtures = await client.get_fixtures(date=date, status="FT")
+            live_fixtures = await client.get_fixtures(date=date, league_id=league_id, status="LIVE")
+            finished_fixtures = await client.get_fixtures(date=date, league_id=league_id, status="FT")
             fixtures = live_fixtures + finished_fixtures
         else:
-            fixtures = await client.get_fixtures(date=date, status=status)
+            fixtures = await client.get_fixtures(date=date, league_id=league_id, status=status)
 
-    # Filter by canonical league name + country if provided (EXACT MATCH, not substring)
-    # This fixes "Armenia Premier League" matching "Premier League" (England)
-    import logging
-    logger = logging.getLogger(__name__)
+        logger.info(f"API-Football returned {len(fixtures)} fixtures (league_id={league_id})")
 
-    if canonical_league_name:
-        # DEBUG: Log first 3 fixture league names for debugging
-        if fixtures:
-            sample_leagues = [
-                f"{f.get('league', {}).get('name', 'N/A')} ({f.get('league', {}).get('country', 'N/A')})"
-                for f in fixtures[:3]
-            ]
-            logger.info(f"Sample API-Football leagues: {sample_leagues}")
-
-        original_count = len(fixtures)
-        if country_filter:
-            # Filter by BOTH league name AND country for precise matching
-            fixtures = [
-                f for f in fixtures
-                if (f.get("league", {}).get("name", "") == canonical_league_name
-                    and f.get("league", {}).get("country", "") == country_filter)
-            ]
-            logger.info(
-                f"Filtered {original_count} → {len(fixtures)} fixtures "
-                f"(name='{canonical_league_name}', country='{country_filter}')"
-            )
-        else:
-            # Filter by league name only (fallback if no country detected)
-            fixtures = [
-                f for f in fixtures
-                if f.get("league", {}).get("name", "") == canonical_league_name
-            ]
-            logger.info(
-                f"Filtered {original_count} → {len(fixtures)} fixtures "
-                f"(name='{canonical_league_name}' only, no country)"
-            )
-    elif country_filter:
-        # Fallback: Filter by country only if league name not recognized
-        # This handles cases like "Wales Championship" where "Championship" isn't in mappings
-        # but we can still filter by country to show all Welsh competitions
+    # ID-FIRST: API already filtered by league_id - minimal client-side filtering needed
+    # Only filter by country if league_id wasn't resolved (fallback for generic queries)
+    if not league_id and country_filter:
+        # Fallback: Filter by country only if league_id not resolved
+        # This handles cases like "[Country] league results" without specific league
         original_count = len(fixtures)
         fixtures = [
             f for f in fixtures
             if f.get("league", {}).get("country", "") == country_filter
         ]
         logger.info(
-            f"Filtered {original_count} → {len(fixtures)} fixtures "
-            f"(country='{country_filter}' only, league name not recognized)"
+            f"Fallback country filter: {original_count} → {len(fixtures)} fixtures "
+            f"(country='{country_filter}', no league_id resolved)"
         )
 
     # Filter by team name if provided (case-insensitive substring match for home or away)
@@ -594,13 +539,14 @@ async def get_match_results(
                 or team_lower in f.get("teams", {}).get("away", {}).get("name", "").lower())
         ]
 
-    # Package response
+    # Package response (include league_id for debugging/tracing)
     response = {
         "matches": fixtures,
         "count": len(fixtures),
         "date": date,
         "status_filter": status,
         "league_filter": league_name,
+        "league_id": league_id,  # API-Football ID used for filtering
         "team_filter": team_name,
     }
 
