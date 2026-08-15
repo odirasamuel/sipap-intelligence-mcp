@@ -9,6 +9,7 @@ Provides 5 intelligence tools using API-Football data:
 """
 
 import os
+from datetime import datetime
 from typing import Any
 
 from sipap_common.cache import RedisCache  # type: ignore[import-untyped]
@@ -501,17 +502,24 @@ async def get_match_results(
     # ID-FIRST: Pass league_id directly to API for efficient server-side filtering
     api_client = _get_api_football_client()
     async with api_client as client:
+        # Determine season from date (API-Football requires season when league_id is provided)
+        # Football seasons typically span Aug-May, so:
+        # - Jan-Jul: use previous year as season start (e.g., Jan 2026 → season 2025)
+        # - Aug-Dec: use current year as season start (e.g., Aug 2026 → season 2026)
+        date_obj = datetime.fromisoformat(date)
+        season = date_obj.year if date_obj.month >= 8 else date_obj.year - 1
+
         # Handle status filter
         # NOTE: With ID-first architecture, API handles league filtering - no client-side needed
         if status == "ALL":
             # Fetch both live and finished
             # NOTE: API-Football doesn't support "ALL" status
             # We need to make 2 calls and merge results
-            live_fixtures = await client.get_fixtures(date=date, league_id=league_id, status="LIVE")
-            finished_fixtures = await client.get_fixtures(date=date, league_id=league_id, status="FT")
+            live_fixtures = await client.get_fixtures(date=date, league_id=league_id, season=season, status="LIVE")
+            finished_fixtures = await client.get_fixtures(date=date, league_id=league_id, season=season, status="FT")
             fixtures = live_fixtures + finished_fixtures
         else:
-            fixtures = await client.get_fixtures(date=date, league_id=league_id, status=status)
+            fixtures = await client.get_fixtures(date=date, league_id=league_id, season=season, status=status)
 
         logger.info(f"API-Football returned {len(fixtures)} fixtures (league_id={league_id})")
 
