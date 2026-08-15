@@ -642,6 +642,15 @@ async def get_match_results(
                         # Extract best odds for each fixture
                         best_odds = _extract_best_odds(odds_data)
 
+                        # Debug: Log fixture ID matching
+                        odds_fixture_ids = set(best_odds.keys())
+                        requested_fixture_ids = set(fixture_ids)
+                        matching_ids = requested_fixture_ids & odds_fixture_ids
+                        logger.info(
+                            f"Odds matching: {len(requested_fixture_ids)} requested, "
+                            f"{len(odds_fixture_ids)} available, {len(matching_ids)} match"
+                        )
+
                         # Merge odds into fixtures
                         odds_count = 0
                         for fixture in fixtures:
@@ -661,18 +670,37 @@ async def get_match_results(
                 # Odds fetching is optional - don't fail the whole request if it fails
                 logger.warning(f"Failed to fetch odds (continuing without odds): {e}")
 
-    # SAFETY FILTER: Verify fixtures match requested league IDs
-    # API-Football sometimes returns fixtures from unexpected leagues
+    # SAFETY FILTER: Verify fixtures match requested league IDs AND countries
+    # API-Football sometimes returns fixtures with mismatched data
     if resolved_league_ids:
+        # Get expected countries from our league reference
+        from sipap_common.data.league_reference import get_league_by_id
+        expected_countries = set()
+        for lid in resolved_league_ids:
+            league_info = get_league_by_id(lid)
+            if league_info and league_info.get("country"):
+                expected_countries.add(league_info["country"])
+
         original_count = len(fixtures)
-        fixtures = [
-            f for f in fixtures
-            if f.get("league", {}).get("id") in resolved_league_ids
-        ]
+
+        # Filter by BOTH league ID AND country to catch data inconsistencies
+        if expected_countries:
+            fixtures = [
+                f for f in fixtures
+                if (f.get("league", {}).get("id") in resolved_league_ids
+                    and f.get("league", {}).get("country") in expected_countries)
+            ]
+        else:
+            # Fallback to ID-only filter if no country info
+            fixtures = [
+                f for f in fixtures
+                if f.get("league", {}).get("id") in resolved_league_ids
+            ]
+
         if len(fixtures) != original_count:
             logger.warning(
-                f"League ID mismatch filter: {original_count} → {len(fixtures)} fixtures "
-                f"(requested IDs: {resolved_league_ids})"
+                f"Safety filter: {original_count} → {len(fixtures)} fixtures "
+                f"(requested IDs: {resolved_league_ids}, expected countries: {expected_countries})"
             )
     elif country_filter:
         # Fallback: Filter by country only if league_id not resolved
