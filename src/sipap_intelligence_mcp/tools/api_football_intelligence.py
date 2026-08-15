@@ -123,6 +123,82 @@ def _get_canonical_league_name(league_name: str, user_query: str | None = None) 
     return (canonical_name, country)
 
 
+def _extract_best_odds(odds_data: list[dict[str, Any]]) -> dict[int, dict[str, float]]:
+    """Extract best odds (highest) for each fixture from API-Football odds response.
+
+    API-Football odds structure:
+    {
+        "fixture": {"id": 12345},
+        "bookmakers": [
+            {
+                "id": 8,
+                "name": "Bet365",
+                "bets": [
+                    {
+                        "id": 1,  # Match Winner
+                        "name": "Match Winner",
+                        "values": [
+                            {"value": "Home", "odd": "2.50"},
+                            {"value": "Draw", "odd": "3.20"},
+                            {"value": "Away", "odd": "2.80"}
+                        ]
+                    }
+                ]
+            }
+        ]
+    }
+
+    Returns:
+        Dict mapping fixture_id to best odds: {fixture_id: {"home": 2.50, "draw": 3.20, "away": 2.80}}
+    """
+    best_odds: dict[int, dict[str, float]] = {}
+
+    for odds_entry in odds_data:
+        fixture_id = odds_entry.get("fixture", {}).get("id")
+        if not fixture_id:
+            continue
+
+        # Initialize with zeros
+        home_odds: float = 0.0
+        draw_odds: float = 0.0
+        away_odds: float = 0.0
+
+        # Iterate through all bookmakers to find best odds
+        bookmakers = odds_entry.get("bookmakers", [])
+        for bookmaker in bookmakers:
+            bets = bookmaker.get("bets", [])
+            for bet in bets:
+                # Only process Match Winner (bet_id=1)
+                if bet.get("id") != 1:
+                    continue
+
+                values = bet.get("values", [])
+                for value in values:
+                    try:
+                        odd_value = float(value.get("odd", 0))
+                        outcome = value.get("value", "")
+
+                        # Track highest odds for each outcome
+                        if outcome == "Home" and odd_value > home_odds:
+                            home_odds = odd_value
+                        elif outcome == "Draw" and odd_value > draw_odds:
+                            draw_odds = odd_value
+                        elif outcome == "Away" and odd_value > away_odds:
+                            away_odds = odd_value
+                    except (ValueError, TypeError):
+                        continue
+
+        # Only add if we found at least one valid odd
+        if home_odds > 0 or draw_odds > 0 or away_odds > 0:
+            best_odds[fixture_id] = {
+                "home": home_odds,
+                "draw": draw_odds,
+                "away": away_odds,
+            }
+
+    return best_odds
+
+
 async def get_match_predictions(fixture_id: int) -> dict[str, Any]:
     """Get AI predictions for a match from API-Football.
 
@@ -385,11 +461,15 @@ async def get_match_results(
     team_name: str | None = None,
     status: str = "FT",
     user_query: str | None = None,
+    league_ids: list[int] | None = None,
 ) -> dict[str, Any]:
     """Get live or completed match results from API-Football (REAL-TIME DATA).
 
     MCP Tool: Fetches actual match scores and status directly from API-Football.
     This provides LIVE, REAL-TIME data, not cached database data.
+
+    PREFERRED: Pass league_ids directly for accurate filtering.
+    This bypasses name resolution and uses API-Football IDs directly.
 
     Use this tool when user asks for:
     - "What are the results for...?"
@@ -397,8 +477,10 @@ async def get_match_results(
     - "How did [team] do...?"
     - "Show me live matches"
     - "What's happening in [competition]?"
+    - "Show fixtures for [country/league] tomorrow"
 
     Status values:
+        - "NS" - Not Started (upcoming fixtures)
         - "FT" - Finished matches (90 minutes, default)
         - "LIVE" - All live matches (1H, HT, 2H, ET, etc.)
         - "AET" - Finished after extra time
@@ -464,31 +546,41 @@ async def get_match_results(
     if date is None:
         date = datetime.now(UTC).date().isoformat()
 
-    # ID-FIRST ARCHITECTURE: Resolve league to API-Football ID
-    # This eliminates string matching ambiguity and enables efficient server-side filtering
-    league_id: int | None = None
+    # ID-FIRST ARCHITECTURE: Use league_ids directly if provided (PREFERRED)
+    # This bypasses name resolution completely - orchestrator passes IDs from NLU
+    resolved_league_ids: list[int] = []
     canonical_league_name: str | None = None
     country_filter: str | None = None
 
-    if league_name:
+    if league_ids:
+        # Direct ID-first path: Use the provided API-Football IDs
+        resolved_league_ids = league_ids
+        logger.info(f"Using provided league_ids directly: {league_ids}")
+    elif league_name:
+        # Legacy path: Resolve league name to ID
         league_id, canonical_league_name, country_filter = _resolve_league_to_id(
             league_name, user_query=user_query
         )
+        if league_id:
+            resolved_league_ids = [league_id]
         logger.info(
             f"ID-first resolution: '{league_name}' → ID {league_id} "
             f"(canonical='{canonical_league_name}', country='{country_filter}')"
         )
 
-    # Build cache key (include league_id for uniqueness)
-    cache_filter = f"{league_id or 'all'}-{canonical_league_name or 'all'}-{country_filter or 'all'}"
+    # Build cache key (include league_ids for uniqueness)
+    league_ids_str = "-".join(str(lid) for lid in sorted(resolved_league_ids)) if resolved_league_ids else "all"
+    cache_filter = f"{league_ids_str}-{canonical_league_name or 'all'}-{country_filter or 'all'}"
     cache_key = f"match_results:{date}:{status}:{cache_filter}:{team_name or 'all'}"
 
     # Determine cache TTL based on status
-    # LIVE data changes fast (2 min), finished data is static (1 hour)
+    # LIVE data changes fast (2 min), NS/finished data is more static (30 min for NS, 1 hour for FT)
     if status == "LIVE":
         cache_ttl = 120  # 2 minutes
+    elif status == "NS":
+        cache_ttl = 1800  # 30 minutes for upcoming fixtures
     else:
-        cache_ttl = 3600  # 1 hour
+        cache_ttl = 3600  # 1 hour for finished
 
     # Try cache first (Sentinel Pattern #20: Cache-Aside)
     cache = _get_cache()
@@ -499,7 +591,7 @@ async def get_match_results(
             return result
 
     # Fetch from API-Football (REAL-TIME)
-    # ID-FIRST: Pass league_id directly to API for efficient server-side filtering
+    # ID-FIRST: Pass league_ids directly to API for efficient server-side filtering
     api_client = _get_api_football_client()
     async with api_client as client:
         # Determine season from date (API-Football requires season when league_id is provided)
@@ -509,23 +601,69 @@ async def get_match_results(
         date_obj = datetime.fromisoformat(date)
         season = date_obj.year if date_obj.month >= 8 else date_obj.year - 1
 
-        # Handle status filter
-        # NOTE: With ID-first architecture, API handles league filtering - no client-side needed
-        if status == "ALL":
-            # Fetch both live and finished
-            # NOTE: API-Football doesn't support "ALL" status
-            # We need to make 2 calls and merge results
-            live_fixtures = await client.get_fixtures(date=date, league_id=league_id, season=season, status="LIVE")
-            finished_fixtures = await client.get_fixtures(date=date, league_id=league_id, season=season, status="FT")
-            fixtures = live_fixtures + finished_fixtures
-        else:
-            fixtures = await client.get_fixtures(date=date, league_id=league_id, season=season, status=status)
+        fixtures: list[dict[str, Any]] = []
 
-        logger.info(f"API-Football returned {len(fixtures)} fixtures (league_id={league_id})")
+        # Fetch fixtures for each league ID (or all leagues if no IDs specified)
+        if resolved_league_ids:
+            # Fetch fixtures for each specified league ID
+            for league_id in resolved_league_ids:
+                if status == "ALL":
+                    # Fetch both live and finished for this league
+                    live = await client.get_fixtures(date=date, league_id=league_id, season=season, status="LIVE")
+                    finished = await client.get_fixtures(date=date, league_id=league_id, season=season, status="FT")
+                    fixtures.extend(live)
+                    fixtures.extend(finished)
+                else:
+                    league_fixtures = await client.get_fixtures(date=date, league_id=league_id, season=season, status=status)
+                    fixtures.extend(league_fixtures)
+            logger.info(f"API-Football returned {len(fixtures)} fixtures for {len(resolved_league_ids)} leagues: {resolved_league_ids}")
+        else:
+            # No league IDs specified - fetch all fixtures for date
+            if status == "ALL":
+                live_fixtures = await client.get_fixtures(date=date, season=season, status="LIVE")
+                finished_fixtures = await client.get_fixtures(date=date, season=season, status="FT")
+                fixtures = live_fixtures + finished_fixtures
+            else:
+                fixtures = await client.get_fixtures(date=date, season=season, status=status)
+            logger.info(f"API-Football returned {len(fixtures)} fixtures (no league filter)")
+
+        # Fetch odds for upcoming fixtures (NS status only - odds not needed for finished matches)
+        # This enriches fixture data with betting odds for display
+        if status == "NS" and fixtures:
+            try:
+                # Get fixture IDs for odds lookup
+                fixture_ids = [f.get("fixture", {}).get("id") for f in fixtures if f.get("fixture", {}).get("id")]
+
+                if fixture_ids:
+                    # Fetch odds for all fixtures at once using date filter (more efficient than per-fixture)
+                    odds_data = await client.get_odds(date=date, bet_id=1)  # bet_id=1 = Match Winner (1X2)
+
+                    if odds_data:
+                        # Extract best odds for each fixture
+                        best_odds = _extract_best_odds(odds_data)
+
+                        # Merge odds into fixtures
+                        odds_count = 0
+                        for fixture in fixtures:
+                            fixture_id = fixture.get("fixture", {}).get("id")
+                            if fixture_id and fixture_id in best_odds:
+                                odds = best_odds[fixture_id]
+                                # Add odds to fixture in format expected by orchestrator
+                                fixture["best_home_odds"] = odds.get("home", 0)
+                                fixture["best_draw_odds"] = odds.get("draw", 0)
+                                fixture["best_away_odds"] = odds.get("away", 0)
+                                odds_count += 1
+
+                        logger.info(f"Added odds to {odds_count}/{len(fixtures)} fixtures")
+                    else:
+                        logger.info("No odds data available for fixtures")
+            except Exception as e:
+                # Odds fetching is optional - don't fail the whole request if it fails
+                logger.warning(f"Failed to fetch odds (continuing without odds): {e}")
 
     # ID-FIRST: API already filtered by league_id - minimal client-side filtering needed
-    # Only filter by country if league_id wasn't resolved (fallback for generic queries)
-    if not league_id and country_filter:
+    # Only filter by country if league_ids weren't provided (fallback for generic queries)
+    if not resolved_league_ids and country_filter:
         # Fallback: Filter by country only if league_id not resolved
         # This handles cases like "[Country] league results" without specific league
         original_count = len(fixtures)
@@ -547,14 +685,14 @@ async def get_match_results(
                 or team_lower in f.get("teams", {}).get("away", {}).get("name", "").lower())
         ]
 
-    # Package response (include league_id for debugging/tracing)
+    # Package response (include league_ids for debugging/tracing)
     response = {
         "matches": fixtures,
         "count": len(fixtures),
         "date": date,
         "status_filter": status,
         "league_filter": league_name,
-        "league_id": league_id,  # API-Football ID used for filtering
+        "league_ids": resolved_league_ids,  # API-Football IDs used for filtering
         "team_filter": team_name,
     }
 

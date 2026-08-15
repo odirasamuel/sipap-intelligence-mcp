@@ -415,3 +415,90 @@ class APIFootballIntelligenceClient:
             raise IntelligenceMCPException(f"HTTP error fetching fixtures: {str(e)}") from e
         except Exception as e:
             raise IntelligenceMCPException(f"Error fetching fixtures: {str(e)}") from e
+
+    async def get_odds(
+        self,
+        fixture_id: int | None = None,
+        league_id: int | None = None,
+        season: int | None = None,
+        date: str | None = None,
+        bookmaker_id: int | None = None,
+        bet_id: int = 1,  # 1 = Match Winner (1X2)
+    ) -> list[dict[str, Any]]:
+        """
+        Get betting odds for fixtures.
+
+        Returns odds from various bookmakers for specified fixtures.
+        Default bet type is Match Winner (1X2) - Home/Draw/Away.
+
+        API Endpoint: GET /odds
+        Update Frequency: Several times a day (on match days more frequently)
+        Recommended Calls: 1 per request
+
+        Bet IDs (common):
+            - 1: Match Winner (1X2) - Home/Draw/Away
+            - 2: Home/Away (no draw)
+            - 3: Second Half Winner
+            - 5: Goals Over/Under
+            - 6: Goals Over/Under First Half
+
+        Args:
+            fixture_id: Specific fixture ID to get odds for
+            league_id: League ID (requires season)
+            season: Season year (required with league_id)
+            date: Date in YYYY-MM-DD format
+            bookmaker_id: Specific bookmaker ID (optional)
+            bet_id: Type of bet (default: 1 = Match Winner)
+
+        Returns:
+            List of odds records with:
+                - fixture: Fixture info
+                - bookmakers: List of bookmaker odds
+                  - Each bookmaker contains bets with values (odd value)
+
+        Raises:
+            IntelligenceMCPException: If API request fails
+
+        Examples:
+            >>> # Get odds for a specific fixture
+            >>> odds = await client.get_odds(fixture_id=12345)
+
+            >>> # Get odds for all fixtures on a date
+            >>> odds = await client.get_odds(date="2026-08-15")
+
+            >>> # Get odds for a league
+            >>> odds = await client.get_odds(league_id=39, season=2026)
+        """
+        if not self._client:
+            raise RuntimeError("Client not initialized. Use 'async with' context manager")
+
+        url = f"{self.BASE_URL}/odds"
+        params: dict[str, str | int] = {"bet": bet_id}
+
+        # Build query parameters (at least one filter required)
+        if fixture_id is not None:
+            params["fixture"] = fixture_id
+        if league_id is not None:
+            params["league"] = league_id
+        if season is not None:
+            params["season"] = season
+        if date is not None:
+            params["date"] = date
+        if bookmaker_id is not None:
+            params["bookmaker"] = bookmaker_id
+
+        try:
+            response = await self._client.get(url, headers=self._get_headers(), params=params)
+            response.raise_for_status()
+            data = response.json()
+
+            if data.get("errors") and len(data["errors"]) > 0:
+                raise IntelligenceMCPException(f"API-Football error: {data['errors']}")
+
+            result: list[dict[str, Any]] = data.get("response", [])
+            return result
+
+        except httpx.HTTPError as e:
+            raise IntelligenceMCPException(f"HTTP error fetching odds: {str(e)}") from e
+        except Exception as e:
+            raise IntelligenceMCPException(f"Error fetching odds: {str(e)}") from e
