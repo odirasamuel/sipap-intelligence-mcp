@@ -11,11 +11,15 @@ Free tier: 100 requests/day
 Documentation: https://www.api-football.com/documentation-v3
 """
 
+import asyncio
+import logging
 from typing import Any
 
 import httpx
 
 from sipap_intelligence_mcp.exceptions import IntelligenceMCPException
+
+logger = logging.getLogger(__name__)
 
 
 class APIFootballIntelligenceClient:
@@ -61,6 +65,73 @@ class APIFootballIntelligenceClient:
         return {
             "x-apisports-key": self.api_key,
         }
+
+    async def _request_with_retry(
+        self,
+        url: str,
+        params: dict[str, Any],
+        max_retries: int = 3,
+        base_delay: float = 1.0,
+    ) -> dict[str, Any]:
+        """
+        Make API request with rate limit handling and exponential backoff.
+
+        Args:
+            url: API endpoint URL
+            params: Query parameters
+            max_retries: Maximum number of retries on rate limit
+            base_delay: Base delay in seconds for backoff
+
+        Returns:
+            JSON response data
+
+        Raises:
+            IntelligenceMCPException: If request fails after retries
+        """
+        if not self._client:
+            raise RuntimeError("Client not initialized")
+
+        last_error = None
+        for attempt in range(max_retries + 1):
+            try:
+                response = await self._client.get(
+                    url, headers=self._get_headers(), params=params
+                )
+                response.raise_for_status()
+                data = response.json()
+
+                # Check for API-level errors
+                errors = data.get("errors", {})
+                if errors:
+                    # Check for rate limit error
+                    if "rateLimit" in errors:
+                        if attempt < max_retries:
+                            delay = base_delay * (2 ** attempt)
+                            logger.warning(
+                                f"Rate limited, retrying in {delay}s (attempt {attempt + 1}/{max_retries})"
+                            )
+                            await asyncio.sleep(delay)
+                            continue
+                        raise IntelligenceMCPException(f"Rate limit exceeded after {max_retries} retries")
+                    raise IntelligenceMCPException(f"API-Football error: {errors}")
+
+                return data
+
+            except httpx.HTTPStatusError as e:
+                if e.response.status_code == 429:  # Too Many Requests
+                    if attempt < max_retries:
+                        delay = base_delay * (2 ** attempt)
+                        logger.warning(
+                            f"HTTP 429 rate limited, retrying in {delay}s (attempt {attempt + 1}/{max_retries})"
+                        )
+                        await asyncio.sleep(delay)
+                        continue
+                last_error = e
+            except httpx.HTTPError as e:
+                last_error = e
+                break
+
+        raise IntelligenceMCPException(f"Request failed: {last_error}")
 
     async def get_predictions(self, fixture_id: int) -> dict[str, Any]:
         """
@@ -578,3 +649,156 @@ class APIFootballIntelligenceClient:
             raise IntelligenceMCPException(f"HTTP error fetching odds mapping: {str(e)}") from e
         except Exception as e:
             raise IntelligenceMCPException(f"Error fetching odds mapping: {str(e)}") from e
+
+    async def get_odds_for_fixtures(
+        self,
+        fixture_ids: list[int],
+        bet_id: int = 1,
+        batch_size: int = 5,
+        delay_between_batches: float = 0.5,
+    ) -> dict[int, dict[str, Any]]:
+        """
+        Get odds for multiple fixtures efficiently with rate limiting.
+
+        Fetches odds for specific fixture IDs in batches to avoid rate limiting.
+        Much more efficient than fetching all odds for a date and filtering.
+
+        Args:
+            fixture_ids: List of fixture IDs to get odds for
+            bet_id: Type of bet (default: 1 = Match Winner)
+            batch_size: Number of fixtures per batch (default: 5)
+            delay_between_batches: Delay in seconds between batches
+
+        Returns:
+            Dictionary mapping fixture_id -> odds data
+            {
+                12345: {"home": 1.5, "draw": 3.5, "away": 6.0, "bookmaker": "Bet365"},
+                12346: {"home": 2.0, "draw": 3.2, "away": 3.5, "bookmaker": "Unibet"},
+            }
+        """
+        if not self._client:
+            raise RuntimeError("Client not initialized")
+
+        if not fixture_ids:
+            return {}
+
+        url = f"{self.BASE_URL}/odds"
+        results: dict[int, dict[str, Any]] = {}
+
+        # Process in batches to avoid rate limiting
+        for i in range(0, len(fixture_ids), batch_size):
+            batch = fixture_ids[i:i + batch_size]
+
+            # Add delay between batches (except for first batch)
+            if i > 0:
+                await asyncio.sleep(delay_between_batches)
+
+            # Fetch odds for each fixture in batch concurrently
+            for fixture_id in batch:
+                try:
+                    params: dict[str, Any] = {"fixture": fixture_id, "bet": bet_id}
+                    data = await self._request_with_retry(url, params, max_retries=2, base_delay=0.5)
+
+                    response_data = data.get("response", [])
+                    if response_data:
+                        # Extract best odds from first bookmaker
+                        odds_info = self._extract_best_odds_from_response(response_data[0])
+                        if odds_info:
+                            results[fixture_id] = odds_info
+
+                except IntelligenceMCPException as e:
+                    logger.warning(f"Failed to fetch odds for fixture {fixture_id}: {e}")
+                    continue
+
+        logger.info(f"Fetched odds for {len(results)}/{len(fixture_ids)} fixtures")
+        return results
+
+    def _extract_best_odds_from_response(self, odds_data: dict[str, Any]) -> dict[str, Any] | None:
+        """
+        Extract best odds from an odds response.
+
+        Args:
+            odds_data: Single odds response from API
+
+        Returns:
+            Dictionary with home/draw/away odds and bookmaker name, or None
+        """
+        bookmakers = odds_data.get("bookmakers", [])
+        if not bookmakers:
+            return None
+
+        # Use first bookmaker (usually most reliable)
+        bookmaker = bookmakers[0]
+        bookmaker_name = bookmaker.get("name", "Unknown")
+        bets = bookmaker.get("bets", [])
+
+        # Find Match Winner (1X2) bet
+        for bet in bets:
+            if bet.get("id") == 1 or bet.get("name") == "Match Winner":
+                values = bet.get("values", [])
+                odds = {"bookmaker": bookmaker_name}
+                for v in values:
+                    value_name = v.get("value", "").lower()
+                    odd = v.get("odd")
+                    if odd:
+                        try:
+                            odd_float = float(odd)
+                            if value_name == "home":
+                                odds["home"] = odd_float
+                            elif value_name == "draw":
+                                odds["draw"] = odd_float
+                            elif value_name == "away":
+                                odds["away"] = odd_float
+                        except (ValueError, TypeError):
+                            continue
+
+                if "home" in odds and "draw" in odds and "away" in odds:
+                    return odds
+
+        return None
+
+    async def get_all_odds_mapping(self, max_pages: int = 50) -> set[int]:
+        """
+        Get all fixture IDs that have odds available.
+
+        Fetches all pages of the odds mapping endpoint to build a complete
+        set of fixture IDs with available odds.
+
+        Args:
+            max_pages: Maximum pages to fetch (safety limit)
+
+        Returns:
+            Set of fixture IDs that have odds available
+        """
+        all_fixture_ids: set[int] = set()
+        page = 1
+
+        while page <= max_pages:
+            try:
+                result = await self.get_odds_mapping(page=page)
+                fixture_ids = result.get("fixture_ids", [])
+
+                if not fixture_ids:
+                    break
+
+                all_fixture_ids.update(fixture_ids)
+
+                # Check pagination
+                paging = result.get("paging", {})
+                current = paging.get("current", page)
+                total = paging.get("total", 1)
+
+                if current >= total:
+                    break
+
+                page += 1
+
+                # Small delay between pages
+                await asyncio.sleep(0.1)
+
+            except IntelligenceMCPException as e:
+                logger.warning(f"Failed to fetch odds mapping page {page}: {e}")
+                break
+
+        logger.info(f"Found {len(all_fixture_ids)} fixtures with odds available")
+        return all_fixture_ids

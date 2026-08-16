@@ -628,35 +628,25 @@ async def get_match_results(
             logger.info(f"API-Football returned {len(fixtures)} fixtures (no league filter)")
 
         # Fetch odds for upcoming fixtures (NS status only - odds not needed for finished matches)
-        # This enriches fixture data with betting odds for display
+        # Uses efficient fixture ID-based fetching with rate limit handling
         if status == "NS" and fixtures:
             try:
                 # Get fixture IDs for odds lookup
                 fixture_ids = [f.get("fixture", {}).get("id") for f in fixtures if f.get("fixture", {}).get("id")]
 
                 if fixture_ids:
-                    # Fetch odds for all fixtures at once using date filter (more efficient than per-fixture)
-                    odds_data = await client.get_odds(date=date, bet_id=1)  # bet_id=1 = Match Winner (1X2)
+                    logger.info(f"Fetching odds for {len(fixture_ids)} fixtures using fixture ID-based approach")
 
-                    if odds_data:
-                        # Extract best odds for each fixture
-                        best_odds = _extract_best_odds(odds_data)
+                    # Use the new efficient fixture-based odds fetching
+                    # This fetches odds by fixture ID with rate limiting and batching
+                    best_odds = await client.get_odds_for_fixtures(
+                        fixture_ids=fixture_ids,
+                        bet_id=1,  # Match Winner (1X2)
+                        batch_size=5,  # 5 fixtures per batch
+                        delay_between_batches=0.3,  # 300ms between batches
+                    )
 
-                        # Debug: Log fixture ID matching with details
-                        odds_fixture_ids = set(best_odds.keys())
-                        requested_fixture_ids = set(fixture_ids)
-                        matching_ids = requested_fixture_ids & odds_fixture_ids
-                        missing_ids = requested_fixture_ids - odds_fixture_ids
-                        logger.info(
-                            f"Odds matching: {len(requested_fixture_ids)} requested, "
-                            f"{len(odds_fixture_ids)} available in API response, {len(matching_ids)} match"
-                        )
-                        if missing_ids:
-                            logger.info(f"Fixture IDs missing odds: {sorted(list(missing_ids))[:10]}{'...' if len(missing_ids) > 10 else ''}")
-                        # Log sample of requested vs available for debugging
-                        logger.info(f"Sample requested IDs: {sorted(list(requested_fixture_ids))[:5]}")
-                        logger.info(f"Sample available IDs: {sorted(list(odds_fixture_ids))[:5]}")
-
+                    if best_odds:
                         # Merge odds into fixtures
                         odds_count = 0
                         for fixture in fixtures:
@@ -671,7 +661,7 @@ async def get_match_results(
 
                         logger.info(f"Added odds to {odds_count}/{len(fixtures)} fixtures")
                     else:
-                        logger.info("No odds data available for fixtures")
+                        logger.info("No odds data returned for fixtures")
             except Exception as e:
                 # Odds fetching is optional - don't fail the whole request if it fails
                 logger.warning(f"Failed to fetch odds (continuing without odds): {e}")
