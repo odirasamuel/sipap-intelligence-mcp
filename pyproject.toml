@@ -21,7 +21,7 @@ classifiers = [
 ]
 
 dependencies = [
-    "sipap-common>=0.1.1",
+    "sipap-common>=0.1.2",
     "sipap-mcp>=0.1.0",
     "boto3>=1.28.0",
     "httpx>=0.25.0",
